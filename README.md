@@ -1,6 +1,6 @@
 # 🏙️ AI-Driven Sustainable Urban Management System
 **GCUF · BSDS Final Year Project 2026**
-**Developer:** Shahbaz (2022-GCUF-02816)
+**Developer:** Ahmad Raza Freed (2022-GCUF-02816)
 **Supervisor:** Ms. Rabia Shahid
 
 ---
