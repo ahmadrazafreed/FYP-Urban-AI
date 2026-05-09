@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 # PAGE CONFIG
 # ═══════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Urban AI Pakistan", page_icon="🏙️",
-                   layout="wide", initial_sidebar_state="collapsed")
+                   layout="wide", initial_sidebar_state="expanded")
 
 # ═══════════════════════════════════════════════════════════════
 # CSS — Production dark command-center theme
