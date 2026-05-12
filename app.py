@@ -10,6 +10,8 @@ pip install streamlit pandas numpy scikit-learn joblib
 
 import streamlit as st
 import hashlib
+import urllib.parse
+import httpx
 import pandas as pd
 import numpy as np
 import joblib, sqlite3, requests, os, math, warnings
@@ -232,11 +234,15 @@ def rcol(v):
 # ═══════════════════════════════════════════════════════════════
 @st.cache_resource
 def load_models():
-    return (joblib.load("models/flood_model.pkl"),
-            joblib.load("models/flood_features.pkl"),
-            joblib.load("models/waste_classifier.pkl"),
-            joblib.load("models/waste_regressor.pkl"),
-            joblib.load("models/waste_features.pkl"))
+    try:
+        return (joblib.load("models/flood_model.pkl"),
+                joblib.load("models/flood_features.pkl"),
+                joblib.load("models/waste_classifier.pkl"),
+                joblib.load("models/waste_regressor.pkl"),
+                joblib.load("models/waste_features.pkl"))
+    except FileNotFoundError as e:
+        st.error(f"Model file not found: {e}. Please run setup_models.py first.")
+        st.stop()
 
 FM, FF, WC, WR, WF = load_models()
 
@@ -294,9 +300,13 @@ def hlabel(s):
 # ═══════════════════════════════════════════════════════════════
 @st.cache_data
 def load_waste():
-    df = pd.read_csv("data/processed/waste_clean.csv")
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    return df
+    try:
+        df = pd.read_csv("data/processed/waste_clean.csv")
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return df
+    except FileNotFoundError:
+        st.error("waste_clean.csv not found. Please run setup_models.py first.")
+        st.stop()
 
 WDF = load_waste()
 
@@ -372,51 +382,126 @@ def dfig(w=10,h=4):
 # ═══════════════════════════════════════════════════════════════
 # LOGIN SYSTEM
 # ═══════════════════════════════════════════════════════════════
-USERS = {
-    "admin":      {"password": hashlib.sha256("admin123".encode()).hexdigest(),  "role":"Admin",   "name":"System Admin"},
-    "shahbaz":    {"password": hashlib.sha256("fyp2026".encode()).hexdigest(),   "role":"Analyst", "name":"Shahbaz (Developer)"},
-    "supervisor": {"password": hashlib.sha256("gcuf2026".encode()).hexdigest(),  "role":"Viewer",  "name":"Ms. Rabia Shahid"},
-    "ndma":       {"password": hashlib.sha256("ndma123".encode()).hexdigest(),   "role":"Viewer",  "name":"NDMA Official"},
-}
+# ── Auth0 Config ─────────────────────────────────────────────
+try:
+    AUTH0_DOMAIN        = st.secrets["AUTH0_DOMAIN"]
+    AUTH0_CLIENT_ID     = st.secrets["AUTH0_CLIENT_ID"]
+    AUTH0_CLIENT_SECRET = st.secrets["AUTH0_CLIENT_SECRET"]
+    AUTH0_ENABLED = True
+except Exception:
+    AUTH0_ENABLED = False
 
-def check_login(username, password):
-    h = hashlib.sha256(password.encode()).hexdigest()
-    if username in USERS and USERS[username]["password"] == h:
-        return USERS[username]
-    return None
+REDIRECT_URI    = "https://fyp-urban-ai-awuuxpxukxr6kcd8qhfr8f.streamlit.app/"
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.user = None
+def get_google_url():
+    if not AUTH0_ENABLED: return "#"
+    p = {"response_type":"code","client_id":AUTH0_CLIENT_ID,
+         "redirect_uri":REDIRECT_URI,"scope":"openid email profile",
+         "connection":"google-oauth2"}
+    return f"https://{AUTH0_DOMAIN}/authorize?{urllib.parse.urlencode(p)}"
 
-if not st.session_state.logged_in:
-    cl, cc, cr = st.columns([0.1,1,0.1])
-    with cc:
-        st.markdown("""
-        <div style="text-align:center;padding:40px 0 20px">
-          <div style="font-family:monospace;font-size:2rem;color:#3b82f6">🏙️</div>
-          <div style="font-family:monospace;font-size:1.3rem;font-weight:700;color:#e8edf5;margin-top:8px">Urban AI System</div>
-          <div style="color:#7a8ea8;font-size:.85rem;margin-top:4px">Pakistan · GCUF BSDS 2026</div>
-        </div>""", unsafe_allow_html=True)
-        with st.container():
-            st.markdown("**Sign in to continue**")
-            username = st.text_input("Username", placeholder="e.g. admin")
-            password = st.text_input("Password", type="password")
-            if st.button("Sign In", type="primary", use_container_width=True):
-                user = check_login(username, password)
-                if user:
-                    st.session_state.logged_in = True
-                    st.session_state.user = user
-                    st.session_state.username = username
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password")
-        st.markdown("""
-        <div class="alert a-info" style="margin-top:12px;font-size:.8rem">
-        <b>Demo Credentials</b><br>
-        admin / admin123 &nbsp;|&nbsp; shahbaz / fyp2026<br>
-        supervisor / gcuf2026 &nbsp;|&nbsp; ndma / ndma123
-        </div>""", unsafe_allow_html=True)
+def get_email_url():
+    if not AUTH0_ENABLED: return "#"
+    p = {"response_type":"code","client_id":AUTH0_CLIENT_ID,
+         "redirect_uri":REDIRECT_URI,"scope":"openid email profile"}
+    return f"https://{AUTH0_DOMAIN}/authorize?{urllib.parse.urlencode(p)}"
+
+def get_logout_url():
+    if not AUTH0_ENABLED: return REDIRECT_URI
+    p = {"client_id":AUTH0_CLIENT_ID,"returnTo":REDIRECT_URI}
+    return f"https://{AUTH0_DOMAIN}/v2/logout?{urllib.parse.urlencode(p)}"
+
+def exchange_code(code):
+    try:
+        r = httpx.post(f"https://{AUTH0_DOMAIN}/oauth/token", data={
+            "grant_type":"authorization_code","client_id":AUTH0_CLIENT_ID,
+            "client_secret":AUTH0_CLIENT_SECRET,"code":code,
+            "redirect_uri":REDIRECT_URI}, timeout=10)
+        return r.json() if r.status_code==200 else None
+    except: return None
+
+def get_userinfo(token):
+    try:
+        r = httpx.get(f"https://{AUTH0_DOMAIN}/userinfo",
+                      headers={"Authorization":f"Bearer {token}"}, timeout=10)
+        return r.json() if r.status_code==200 else None
+    except: return None
+
+# ── Handle OAuth callback ─────────────────────────────────────
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+qp = st.query_params
+auth_code_param = qp.get("code", None)
+
+if auth_code_param and not st.session_state.auth_user and AUTH0_ENABLED:
+    with st.spinner("Signing you in..."):
+        tok = exchange_code(auth_code_param)
+        if tok and "access_token" in tok:
+            info = get_userinfo(tok["access_token"])
+            if info:
+                st.session_state.auth_user = {
+                    "name":    info.get("name","User"),
+                    "email":   info.get("email",""),
+                    "picture": info.get("picture",""),
+                    "role":    "User",
+                }
+                st.query_params.clear()
+                st.rerun()
+
+# ── Show login page ───────────────────────────────────────────
+if not st.session_state.auth_user:
+    st.markdown("""
+    <style>
+    .stApp{background:#080c14}
+    .lw{display:flex;justify-content:center;align-items:center;min-height:88vh}
+    .lb{background:#0d1421;border:1px solid #1e2d45;border-radius:20px;
+        padding:44px 38px;width:100%;max-width:400px;text-align:center}
+    .lt{font-family:monospace;font-size:1.4rem;font-weight:700;color:#e8edf5;margin:8px 0 4px}
+    .ls{color:#7a8ea8;font-size:.85rem;margin-bottom:28px;line-height:1.6}
+    .bg{display:flex;align-items:center;justify-content:center;gap:10px;
+        background:#fff;color:#1a1a1a;border-radius:10px;padding:13px;
+        font-size:.92rem;font-weight:600;text-decoration:none;margin-bottom:14px;
+        transition:background .2s}
+    .bg:hover{background:#f0f0f0}
+    .be{display:flex;align-items:center;justify-content:center;gap:10px;
+        background:#3b82f6;color:#fff;border-radius:10px;padding:13px;
+        font-size:.92rem;font-weight:600;text-decoration:none;
+        transition:background .2s}
+    .be:hover{background:#2563eb}
+    .div{display:flex;align-items:center;gap:10px;margin:16px 0;color:#3d5170;font-size:.78rem}
+    .div::before,.div::after{content:'';flex:1;height:1px;background:#1e2d45}
+    .lf{color:#3d5170;font-size:.72rem;margin-top:20px;line-height:1.8}
+    </style>
+    """, unsafe_allow_html=True)
+
+    google_url = get_google_url()
+    email_url  = get_email_url()
+
+    st.markdown(f"""
+    <div class="lw"><div class="lb">
+      <div style="font-size:2.8rem">🏙️</div>
+      <div class="lt">Urban AI System</div>
+      <div class="ls">Pakistan · GCUF BSDS 2026<br>AI-Driven Urban Management</div>
+      <a href="{google_url}" class="bg" target="_self">
+        <svg width="18" height="18" viewBox="0 0 48 48">
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+        </svg>
+        Continue with Google
+      </a>
+      <div class="div">or</div>
+      <a href="{email_url}" class="be" target="_self">
+        📧 Login / Sign up with Email
+      </a>
+      <div class="lf">
+        Secure login powered by Auth0 🔒<br>
+        Your data is protected and encrypted
+      </div>
+    </div></div>
+    """, unsafe_allow_html=True)
     st.stop()
 
 # ═══════════════════════════════════════════════════════════════
@@ -435,11 +520,19 @@ with st.sidebar:
       <span style="color:#3d5170">{datetime.now().strftime('%d %b %Y · %H:%M')}</span>
     </div>""", unsafe_allow_html=True)
 
-    u = st.session_state.user
+    u = st.session_state.auth_user or {}
+    name    = u.get('name','User')
+    email   = u.get('email','')
+    picture = u.get('picture','')
+    pic_html = f'<img src="{picture}" width="28" height="28" style="border-radius:50%;margin-right:8px;vertical-align:middle">' if picture else "👤"
     st.markdown(f"""
-    <div style="background:#071a12;border:1px solid #064e3b;border-radius:8px;padding:9px 12px;margin:8px 0;font-size:.76rem">
-      👤 <b style="color:#34d399">{u['name']}</b><br>
-      <span style="color:#3d5170">{u['role']} · Logged in</span>
+    <div style="background:#071a12;border:1px solid #064e3b;border-radius:8px;
+                padding:9px 12px;margin:8px 0;font-size:.76rem;display:flex;align-items:center">
+      {pic_html}
+      <div>
+        <b style="color:#34d399">{name}</b><br>
+        <span style="color:#3d5170;font-size:.68rem">{email}</span>
+      </div>
     </div>""", unsafe_allow_html=True)
 
     page = st.radio("", [
@@ -457,10 +550,8 @@ with st.sidebar:
     ], label_visibility="collapsed")
 
     st.markdown("---")
-    if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.user = None
-        st.rerun()
+    logout_url = get_logout_url()
+    st.markdown(f'<a href="{logout_url}" target="_self" style="display:block;background:#1a0a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:.85rem;margin-top:8px">🚪 Logout</a>', unsafe_allow_html=True)
 
     st.markdown("""
     <div style="font-size:.7rem;color:#3d5170;line-height:2;margin-top:12px">
@@ -1108,12 +1199,11 @@ elif "Email" in page:
     st.markdown("Auto-send alerts when flood or heatwave risk crosses critical threshold")
     st.markdown("---")
 
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-
     def send_alert_email(sender, password, recipient, city, flood_pct, heat_pct, weather):
         try:
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
             msg = MIMEMultipart("alternative")
             msg['Subject'] = f"⚠️ Urban AI Alert — {city} Risk Warning"
             msg['From']    = sender

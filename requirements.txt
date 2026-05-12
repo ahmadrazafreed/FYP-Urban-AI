@@ -9,3 +9,5 @@ folium
 streamlit-folium
 requests
 reportlab
+authlib
+httpx
