@@ -383,10 +383,9 @@ def dfig(w=10,h=4):
 # LOGIN SYSTEM
 # ═══════════════════════════════════════════════════════════════
 # ── Firebase Auth Config ─────────────────────────────────────
-FIREBASE_API_KEY   = "AIzaSyCB1xbTHFRKOY4m9JQbqySRNkaT1w-FPv4"
-FIREBASE_SIGN_IN   = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
-FIREBASE_SIGN_UP   = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
-FIREBASE_RESET     = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={FIREBASE_API_KEY}"
+FIREBASE_API_KEY = "AIzaSyCB1xbTHFRKOY4m9JQbqySRNkaT1w-FPv4"
+FIREBASE_SIGN_IN = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+FIREBASE_SIGN_UP = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
 
 def firebase_login(email, password):
     try:
@@ -394,10 +393,10 @@ def firebase_login(email, password):
             json={"email":email,"password":password,"returnSecureToken":True},timeout=10)
         d = r.json()
         if "idToken" in d:
-            return {"name":d.get("displayName", email.split("@")[0]),
+            return {"name":d.get("displayName",email.split("@")[0]),
                     "email":d["email"],"picture":"","token":d["idToken"]}, None
         msg = d.get("error",{}).get("message","Login failed")
-        msg = msg.replace("EMAIL_NOT_FOUND","Email not registered")                 .replace("INVALID_PASSWORD","Wrong password")                 .replace("INVALID_LOGIN_CREDENTIALS","Invalid email or password")                 .replace("TOO_MANY_ATTEMPTS_TRY_LATER","Too many attempts. Try later.")
+        msg = msg.replace("EMAIL_NOT_FOUND","Email not registered")                 .replace("INVALID_PASSWORD","Wrong password")                 .replace("INVALID_LOGIN_CREDENTIALS","Invalid email or password")                 .replace("TOO_MANY_ATTEMPTS_TRY_LATER","Too many attempts, try later")
         return None, msg
     except Exception as e: return None, str(e)
 
@@ -410,150 +409,220 @@ def firebase_signup(email, password, name):
             return {"name":name or email.split("@")[0],
                     "email":d["email"],"picture":"","token":d["idToken"]}, None
         msg = d.get("error",{}).get("message","Signup failed")
-        msg = msg.replace("EMAIL_EXISTS","Email already registered — try logging in")                 .replace("WEAK_PASSWORD","Password must be at least 6 characters")
+        msg = msg.replace("EMAIL_EXISTS","Email already registered, try signing in")                 .replace("WEAK_PASSWORD","Password must be at least 6 characters")
         return None, msg
     except Exception as e: return None, str(e)
 
 # ── Session ───────────────────────────────────────────────────
-for k,v in [("auth_user",None),("auth_tab","login"),("auth_err",""),("show_reset",False)]:
+for k,v in [("auth_user",None),("auth_tab","login"),("auth_err","")]:
     if k not in st.session_state: st.session_state[k]=v
 
 # ── Login Page ────────────────────────────────────────────────
 if not st.session_state.auth_user:
     st.markdown("""
     <style>
-    .stApp{background:linear-gradient(135deg,#060910 0%,#0a1628 50%,#060910 100%)}
-    .stTabs [data-baseweb="tab-list"]{background:transparent;border-bottom:1px solid #1e2d45}
-    .stTabs [data-baseweb="tab"]{color:#7a8ea8;font-size:.9rem;padding:10px 20px}
-    .stTabs [aria-selected="true"]{color:#e8edf5;border-bottom:2px solid #3b82f6}
-    .stTextInput input{background:#111b2e!important;border:1px solid #1e2d45!important;
-                       color:#e8edf5!important;border-radius:10px!important;padding:12px!important}
-    .stTextInput input:focus{border-color:#3b82f6!important;box-shadow:0 0 0 3px rgba(59,130,246,.15)!important}
-    .stTextInput label{color:#7a8ea8!important;font-size:.82rem!important}
-    .stButton>button{border-radius:10px!important;padding:12px!important;
-                     font-weight:600!important;font-size:.9rem!important;width:100%!important}
-    .stButton>button[kind="primary"]{background:linear-gradient(135deg,#3b82f6,#2563eb)!important;
-                                     border:none!important;color:white!important}
-    div[data-testid="stVerticalBlock"]{gap:.6rem}
+    .stApp {
+        background: radial-gradient(ellipse at 20% 50%, #0a1628 0%, #060910 60%, #080c14 100%) !important;
+    }
     #MainMenu,footer,header{visibility:hidden}
-    </style>""", unsafe_allow_html=True)
+    .stTabs [data-baseweb="tab-list"] {
+        background: transparent !important;
+        border-bottom: 1px solid #1e2d45 !important;
+        gap: 0 !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #7a8ea8 !important;
+        font-size: .88rem !important;
+        padding: 10px 24px !important;
+        background: transparent !important;
+        border-radius: 0 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #e8edf5 !important;
+        border-bottom: 2px solid #3b82f6 !important;
+        background: transparent !important;
+    }
+    .stTextInput > div > div > input {
+        background: #0d1829 !important;
+        border: 1px solid #1e2d45 !important;
+        color: #e8edf5 !important;
+        border-radius: 10px !important;
+        padding: 14px 16px !important;
+        font-size: .9rem !important;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #3b82f6 !important;
+        box-shadow: 0 0 0 3px rgba(59,130,246,0.2) !important;
+    }
+    .stTextInput label { color: #7a8ea8 !important; font-size: .82rem !important; margin-bottom: 4px !important; }
+    .stButton > button {
+        border-radius: 12px !important;
+        padding: 14px 20px !important;
+        font-weight: 600 !important;
+        font-size: .92rem !important;
+        width: 100% !important;
+        transition: all .2s !important;
+    }
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%) !important;
+        border: none !important;
+        color: white !important;
+        box-shadow: 0 4px 15px rgba(59,130,246,0.3) !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        box-shadow: 0 6px 20px rgba(59,130,246,0.5) !important;
+        transform: translateY(-1px) !important;
+    }
+    .stButton > button[kind="secondary"] {
+        background: #0d1829 !important;
+        border: 1px solid #1e2d45 !important;
+        color: #e8edf5 !important;
+    }
+    .stButton > button[kind="secondary"]:hover {
+        border-color: #3b82f6 !important;
+        background: #111b2e !important;
+    }
+    div[data-testid="stVerticalBlock"] { gap: .5rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    # Centered layout
-    _, mid, _ = st.columns([1, 1.4, 1])
+    # Full page layout
+    _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
-        # Header
+        # Logo + Title
         st.markdown("""
-        <div style="text-align:center;padding:32px 0 24px">
-          <div style="font-size:3rem;margin-bottom:8px">🏙️</div>
-          <div style="font-family:monospace;font-size:1.6rem;font-weight:700;
-                      color:#e8edf5;letter-spacing:-.02em">Urban AI System</div>
-          <div style="color:#3b82f6;font-size:.82rem;margin-top:6px;
-                      font-family:monospace;letter-spacing:.08em;text-transform:uppercase">
-            Pakistan · GCUF BSDS 2026
-          </div>
-        </div>""", unsafe_allow_html=True)
+        <div style="text-align:center;padding:40px 0 28px">
+            <div style="width:72px;height:72px;background:linear-gradient(135deg,#1d4ed8,#3b82f6);
+                        border-radius:20px;display:inline-flex;align-items:center;justify-content:center;
+                        font-size:2rem;margin-bottom:16px;box-shadow:0 8px 32px rgba(59,130,246,0.3)">
+                🏙️
+            </div>
+            <div style="font-family:'Space Mono',monospace;font-size:1.7rem;font-weight:700;
+                        color:#e8edf5;letter-spacing:-.02em;line-height:1.2">
+                Urban AI System
+            </div>
+            <div style="color:#3b82f6;font-size:.75rem;margin-top:8px;letter-spacing:.12em;
+                        text-transform:uppercase;font-weight:500">
+                Pakistan · GCUF BSDS 2026
+            </div>
+            <div style="color:#3d5170;font-size:.78rem;margin-top:6px">
+                AI-Driven Urban Management
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Card
         st.markdown("""
-        <div style="background:rgba(13,20,33,.95);border:1px solid #1e2d45;
-                    border-radius:20px;padding:32px 28px;
-                    box-shadow:0 25px 50px rgba(0,0,0,.5)">""",
-            unsafe_allow_html=True)
+        <div style="background:rgba(10,15,25,0.9);border:1px solid #1a2a3f;
+                    border-radius:24px;padding:32px 28px 28px;
+                    box-shadow:0 32px 64px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.03)">
+        """, unsafe_allow_html=True)
 
-        tab_l, tab_s = st.tabs(["  🔑  Sign In  ", "  📝  Create Account  "])
+        tab_l, tab_s = st.tabs(["🔑  Sign In", "✨  Create Account"])
 
+        # ── SIGN IN TAB ───────────────────────────────────────
         with tab_l:
-            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
             if st.session_state.auth_err and st.session_state.auth_tab=="login":
                 st.markdown(f"""
-                <div style="background:#2d0f0f;border:1px solid #7f1d1d;color:#fca5a5;
-                            border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:4px">
-                  ❌ {st.session_state.auth_err}
+                <div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;
+                            border-radius:10px;padding:11px 14px;font-size:.82rem;margin-bottom:8px;
+                            display:flex;align-items:center;gap:8px">
+                    ⚠️ {st.session_state.auth_err}
                 </div>""", unsafe_allow_html=True)
 
-            email_l = st.text_input("Email address", placeholder="name@example.com", key="le")
+            email_l = st.text_input("Email address", placeholder="you@example.com", key="le")
             pass_l  = st.text_input("Password", type="password", placeholder="Enter your password", key="lp")
-
             st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-            if st.button("Sign In →", type="primary", use_container_width=True):
+
+            if st.button("Sign In →", type="primary", use_container_width=True, key="btn_login"):
                 if not email_l or not pass_l:
-                    st.session_state.auth_err = "Please enter your email and password"
-                    st.session_state.auth_tab = "login"; st.rerun()
-                user, err = firebase_login(email_l, pass_l)
+                    st.session_state.auth_err="Please enter your email and password"
+                    st.session_state.auth_tab="login"; st.rerun()
+                user,err = firebase_login(email_l, pass_l)
                 if user:
-                    st.session_state.auth_user = user
-                    st.session_state.auth_err  = ""; st.rerun()
+                    st.session_state.auth_user=user; st.session_state.auth_err=""; st.rerun()
                 else:
-                    st.session_state.auth_err  = err
-                    st.session_state.auth_tab  = "login"; st.rerun()
+                    st.session_state.auth_err=err; st.session_state.auth_tab="login"; st.rerun()
+
+            # Divider
+            st.markdown("""
+            <div style="display:flex;align-items:center;gap:12px;margin:20px 0 16px;color:#3d5170;font-size:.75rem">
+                <div style="flex:1;height:1px;background:linear-gradient(90deg,transparent,#1e2d45)"></div>
+                or
+                <div style="flex:1;height:1px;background:linear-gradient(90deg,#1e2d45,transparent)"></div>
+            </div>""", unsafe_allow_html=True)
+
+            # Google button using Streamlit button + redirect trick
+            if st.button("🔵  Continue with Google", use_container_width=True, key="google_login"):
+                # Open Google OAuth in a new window via JS
+                google_url = (
+                    "https://accounts.google.com/o/oauth2/v2/auth"
+                    "?client_id=396560836970-r3q4n7gsjti06nuce5abu9fii914iap5.apps.googleusercontent.com"
+                    "&redirect_uri=https%3A%2F%2Ffyp-urban-ai-8e92a.firebaseapp.com%2F__%2Fauth%2Fhandler"
+                    "&response_type=code&scope=openid%20email%20profile&prompt=select_account"
+                )
+                st.markdown(f"""
+                <script>window.open('{google_url}','_blank','width=500,height=600');</script>
+                <div style="background:#0a1f3d;border:1px solid #1e3a5f;color:#93c5fd;
+                            border-radius:10px;padding:12px;font-size:.82rem;text-align:center;margin-top:8px">
+                    💡 A Google login window opened.<br>After signing in with Google,<br>
+                    use your Gmail address + set a password above to login here.
+                </div>""", unsafe_allow_html=True)
 
             st.markdown("""
-            <div style="display:flex;align-items:center;gap:10px;margin:16px 0;color:#3d5170;font-size:.75rem">
-              <div style="flex:1;height:1px;background:#1e2d45"></div>
-              or continue with
-              <div style="flex:1;height:1px;background:#1e2d45"></div>
+            <div style="text-align:center;margin-top:16px;color:#3d5170;font-size:.75rem">
+                Don't have an account?
+                <span style="color:#3b82f6;cursor:pointer"> Switch to Create Account tab ↑</span>
             </div>""", unsafe_allow_html=True)
 
-            # Google button — opens in new tab to avoid iframe issues
-            google_link = (
-                "https://accounts.google.com/o/oauth2/v2/auth"
-                "?client_id=523419183867-2c8v4k0j9n5f7m3p6q1r8t0u2w4y6z8a.apps.googleusercontent.com"
-                "&redirect_uri=https%3A%2F%2Ffyp-urban-ai-8e92a.firebaseapp.com%2F__%2Fauth%2Fhandler"
-                "&response_type=code&scope=openid%20email%20profile&prompt=select_account"
-            )
-            st.markdown(f"""
-            <div style="text-align:center;color:#3d5170;font-size:.78rem;
-                        background:#0d1421;border:1px solid #1e2d45;
-                        border-radius:10px;padding:12px">
-              🌐 Google login: use Email/Password above.<br>
-              Sign up with your Gmail email directly!
-            </div>""", unsafe_allow_html=True)
-
+        # ── CREATE ACCOUNT TAB ────────────────────────────────
         with tab_s:
-            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
             if st.session_state.auth_err and st.session_state.auth_tab=="signup":
                 st.markdown(f"""
-                <div style="background:#2d0f0f;border:1px solid #7f1d1d;color:#fca5a5;
-                            border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:4px">
-                  ❌ {st.session_state.auth_err}
+                <div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;
+                            border-radius:10px;padding:11px 14px;font-size:.82rem;margin-bottom:8px;
+                            display:flex;align-items:center;gap:8px">
+                    ⚠️ {st.session_state.auth_err}
                 </div>""", unsafe_allow_html=True)
 
             name_s  = st.text_input("Full Name", placeholder="Ahmad Raza", key="sn")
-            email_s = st.text_input("Email address", placeholder="name@example.com", key="se")
+            email_s = st.text_input("Email address", placeholder="you@example.com", key="se")
             pass_s  = st.text_input("Password", type="password", placeholder="Min. 6 characters", key="sp")
             pass_c  = st.text_input("Confirm Password", type="password", placeholder="Repeat password", key="sc")
-
             st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-            if st.button("Create Account →", type="primary", use_container_width=True):
-                if not all([name_s, email_s, pass_s, pass_c]):
-                    st.session_state.auth_err = "Please fill in all fields"
-                    st.session_state.auth_tab = "signup"; st.rerun()
+
+            if st.button("Create Account →", type="primary", use_container_width=True, key="btn_signup"):
+                if not all([name_s,email_s,pass_s,pass_c]):
+                    st.session_state.auth_err="Please fill in all fields"
+                    st.session_state.auth_tab="signup"; st.rerun()
                 elif pass_s != pass_c:
-                    st.session_state.auth_err = "Passwords do not match"
-                    st.session_state.auth_tab = "signup"; st.rerun()
+                    st.session_state.auth_err="Passwords do not match"
+                    st.session_state.auth_tab="signup"; st.rerun()
                 elif len(pass_s) < 6:
-                    st.session_state.auth_err = "Password must be at least 6 characters"
-                    st.session_state.auth_tab = "signup"; st.rerun()
+                    st.session_state.auth_err="Password must be at least 6 characters"
+                    st.session_state.auth_tab="signup"; st.rerun()
                 else:
-                    user, err = firebase_signup(email_s, pass_s, name_s)
+                    user,err = firebase_signup(email_s,pass_s,name_s)
                     if user:
-                        st.session_state.auth_user = user
-                        st.session_state.auth_err  = ""; st.rerun()
+                        st.session_state.auth_user=user; st.session_state.auth_err=""; st.rerun()
                     else:
-                        st.session_state.auth_err  = err
-                        st.session_state.auth_tab  = "signup"; st.rerun()
+                        st.session_state.auth_err=err; st.session_state.auth_tab="signup"; st.rerun()
 
             st.markdown("""
-            <div style="color:#7a8ea8;font-size:.75rem;margin-top:8px;text-align:center">
-              💡 Already have an account? Switch to Sign In tab
+            <div style="background:#071a12;border:1px solid #064e3b;color:#6ee7b7;
+                        border-radius:10px;padding:11px 14px;font-size:.78rem;
+                        margin-top:8px;text-align:center">
+                ✅ Free account · No credit card · Instant access
             </div>""", unsafe_allow_html=True)
 
         st.markdown("""
         </div>
-        <div style="text-align:center;color:#3d5170;font-size:.7rem;margin-top:16px;padding-bottom:20px">
-          🔒 Secured by Firebase Authentication · AI-Driven Urban Management System
+        <div style="text-align:center;color:#2d3f55;font-size:.7rem;margin-top:14px;padding-bottom:24px">
+            🔒 Secured by Firebase · Urban AI Management System · GCUF 2026
         </div>""", unsafe_allow_html=True)
 
     st.stop()
