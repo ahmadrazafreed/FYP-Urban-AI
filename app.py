@@ -383,203 +383,179 @@ def dfig(w=10,h=4):
 # LOGIN SYSTEM
 # ═══════════════════════════════════════════════════════════════
 # ── Firebase Auth Config ─────────────────────────────────────
-FIREBASE_API_KEY    = "AIzaSyCB1xbTHFRKOY4m9JQbqySRNkaT1w-FPv4"
-FIREBASE_AUTH_DOMAIN= "fyp-urban-ai-8e92a.firebaseapp.com"
-FIREBASE_PROJECT_ID = "fyp-urban-ai-8e92a"
-
-FIREBASE_SIGN_IN_URL  = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
-FIREBASE_SIGN_UP_URL  = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
-FIREBASE_GOOGLE_URL   = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
-FIREBASE_USERINFO_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={FIREBASE_API_KEY}"
-GOOGLE_AUTH_URL       = (
-    f"https://accounts.google.com/o/oauth2/v2/auth"
-    f"?client_id=523419183867-web"
-    f"&redirect_uri=https://fyp-urban-ai-awuuxpxukxr6kcd8qhfr8f.streamlit.app/"
-    f"&response_type=token"
-    f"&scope=email profile"
-)
+FIREBASE_API_KEY   = "AIzaSyCB1xbTHFRKOY4m9JQbqySRNkaT1w-FPv4"
+FIREBASE_SIGN_IN   = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+FIREBASE_SIGN_UP   = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
+FIREBASE_RESET     = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={FIREBASE_API_KEY}"
 
 def firebase_login(email, password):
     try:
-        r = httpx.post(FIREBASE_SIGN_IN_URL,
-            json={"email":email,"password":password,"returnSecureToken":True},
-            timeout=10)
+        r = httpx.post(FIREBASE_SIGN_IN,
+            json={"email":email,"password":password,"returnSecureToken":True},timeout=10)
         d = r.json()
         if "idToken" in d:
-            return {"name": d.get("displayName", email.split("@")[0]),
-                    "email": d["email"], "picture": "", "token": d["idToken"]}
-        return None, d.get("error",{}).get("message","Invalid credentials")
-    except Exception as e:
-        return None, str(e)
+            return {"name":d.get("displayName", email.split("@")[0]),
+                    "email":d["email"],"picture":"","token":d["idToken"]}, None
+        msg = d.get("error",{}).get("message","Login failed")
+        msg = msg.replace("EMAIL_NOT_FOUND","Email not registered")                 .replace("INVALID_PASSWORD","Wrong password")                 .replace("INVALID_LOGIN_CREDENTIALS","Invalid email or password")                 .replace("TOO_MANY_ATTEMPTS_TRY_LATER","Too many attempts. Try later.")
+        return None, msg
+    except Exception as e: return None, str(e)
 
 def firebase_signup(email, password, name):
     try:
-        r = httpx.post(FIREBASE_SIGN_UP_URL,
-            json={"email":email,"password":password,"returnSecureToken":True},
-            timeout=10)
+        r = httpx.post(FIREBASE_SIGN_UP,
+            json={"email":email,"password":password,"returnSecureToken":True},timeout=10)
         d = r.json()
         if "idToken" in d:
-            return {"name": name or email.split("@")[0],
-                    "email": d["email"], "picture": "", "token": d["idToken"]}
-        return None, d.get("error",{}).get("message","Signup failed")
-    except Exception as e:
-        return None, str(e)
+            return {"name":name or email.split("@")[0],
+                    "email":d["email"],"picture":"","token":d["idToken"]}, None
+        msg = d.get("error",{}).get("message","Signup failed")
+        msg = msg.replace("EMAIL_EXISTS","Email already registered — try logging in")                 .replace("WEAK_PASSWORD","Password must be at least 6 characters")
+        return None, msg
+    except Exception as e: return None, str(e)
 
-# ── Session init ──────────────────────────────────────────────
-if "auth_user" not in st.session_state:
-    st.session_state.auth_user  = None
-if "auth_tab" not in st.session_state:
-    st.session_state.auth_tab   = "login"
-if "auth_error" not in st.session_state:
-    st.session_state.auth_error = ""
+# ── Session ───────────────────────────────────────────────────
+for k,v in [("auth_user",None),("auth_tab","login"),("auth_err",""),("show_reset",False)]:
+    if k not in st.session_state: st.session_state[k]=v
 
-# ── Login page ────────────────────────────────────────────────
+# ── Login Page ────────────────────────────────────────────────
 if not st.session_state.auth_user:
     st.markdown("""
     <style>
-    .stApp{background:#080c14}
-    .lw{display:flex;justify-content:center;align-items:center;min-height:88vh}
-    .lb{background:#0d1421;border:1px solid #1e2d45;border-radius:20px;
-        padding:40px 36px;width:100%;max-width:420px}
-    .lt{font-family:monospace;font-size:1.4rem;font-weight:700;
-        color:#e8edf5;margin:8px 0 4px;text-align:center}
-    .ls{color:#7a8ea8;font-size:.83rem;margin-bottom:24px;
-        text-align:center;line-height:1.6}
-    .bg{display:flex;align-items:center;justify-content:center;gap:10px;
-        background:#fff;color:#1a1a1a;border-radius:10px;padding:12px;
-        font-size:.9rem;font-weight:600;text-decoration:none;
-        margin-bottom:20px;transition:background .2s}
-    .bg:hover{background:#f0f0f0}
-    .div{display:flex;align-items:center;gap:10px;margin:4px 0 16px;
-         color:#3d5170;font-size:.76rem}
-    .div::before,.div::after{content:\'\';flex:1;height:1px;background:#1e2d45}
-    .err{background:#2d0f0f;border:1px solid #7f1d1d;color:#f87171;
-         border-radius:8px;padding:10px;font-size:.8rem;margin-bottom:12px}
-    .lf{color:#3d5170;font-size:.7rem;margin-top:16px;text-align:center}
-    </style>
-    <div class="lw"><div class="lb">
-      <div style="text-align:center;font-size:2.5rem">🏙️</div>
-      <div class="lt">Urban AI System</div>
-      <div class="ls">Pakistan · GCUF BSDS 2026</div>
-    </div></div>
-    """, unsafe_allow_html=True)
+    .stApp{background:linear-gradient(135deg,#060910 0%,#0a1628 50%,#060910 100%)}
+    .stTabs [data-baseweb="tab-list"]{background:transparent;border-bottom:1px solid #1e2d45}
+    .stTabs [data-baseweb="tab"]{color:#7a8ea8;font-size:.9rem;padding:10px 20px}
+    .stTabs [aria-selected="true"]{color:#e8edf5;border-bottom:2px solid #3b82f6}
+    .stTextInput input{background:#111b2e!important;border:1px solid #1e2d45!important;
+                       color:#e8edf5!important;border-radius:10px!important;padding:12px!important}
+    .stTextInput input:focus{border-color:#3b82f6!important;box-shadow:0 0 0 3px rgba(59,130,246,.15)!important}
+    .stTextInput label{color:#7a8ea8!important;font-size:.82rem!important}
+    .stButton>button{border-radius:10px!important;padding:12px!important;
+                     font-weight:600!important;font-size:.9rem!important;width:100%!important}
+    .stButton>button[kind="primary"]{background:linear-gradient(135deg,#3b82f6,#2563eb)!important;
+                                     border:none!important;color:white!important}
+    div[data-testid="stVerticalBlock"]{gap:.6rem}
+    #MainMenu,footer,header{visibility:hidden}
+    </style>""", unsafe_allow_html=True)
 
-    # Center the form
-    _, col, _ = st.columns([1, 2, 1])
-    with col:
-        # Google login button (via Firebase redirect)
-        google_oauth_url = (
-            "https://accounts.google.com/o/oauth2/v2/auth"
-            f"?client_id=523419183867"
-            "&redirect_uri=https://fyp-urban-ai-8e92a.firebaseapp.com/__/auth/handler"
-            "&response_type=code"
-            "&scope=openid email profile"
-            "&prompt=select_account"
-        )
+    # Centered layout
+    _, mid, _ = st.columns([1, 1.4, 1])
+    with mid:
+        # Header
+        st.markdown("""
+        <div style="text-align:center;padding:32px 0 24px">
+          <div style="font-size:3rem;margin-bottom:8px">🏙️</div>
+          <div style="font-family:monospace;font-size:1.6rem;font-weight:700;
+                      color:#e8edf5;letter-spacing:-.02em">Urban AI System</div>
+          <div style="color:#3b82f6;font-size:.82rem;margin-top:6px;
+                      font-family:monospace;letter-spacing:.08em;text-transform:uppercase">
+            Pakistan · GCUF BSDS 2026
+          </div>
+        </div>""", unsafe_allow_html=True)
 
-        # Tabs for login/signup
-        tab_login, tab_signup = st.tabs(["🔑 Login", "📝 Sign Up"])
+        # Card
+        st.markdown("""
+        <div style="background:rgba(13,20,33,.95);border:1px solid #1e2d45;
+                    border-radius:20px;padding:32px 28px;
+                    box-shadow:0 25px 50px rgba(0,0,0,.5)">""",
+            unsafe_allow_html=True)
 
-        with tab_login:
-            st.markdown("")
-            email_l    = st.text_input("Email", placeholder="you@gmail.com", key="login_email")
-            password_l = st.text_input("Password", type="password", placeholder="••••••••", key="login_pass")
+        tab_l, tab_s = st.tabs(["  🔑  Sign In  ", "  📝  Create Account  "])
 
-            if st.session_state.auth_error and st.session_state.auth_tab == "login":
-                st.markdown(f'<div class="err">❌ {st.session_state.auth_error}</div>',
-                            unsafe_allow_html=True)
+        with tab_l:
+            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-            if st.button("🔑 Login", type="primary", use_container_width=True):
-                if not email_l or not password_l:
-                    st.session_state.auth_error = "Please enter email and password"
-                    st.session_state.auth_tab   = "login"
-                    st.rerun()
+            if st.session_state.auth_err and st.session_state.auth_tab=="login":
+                st.markdown(f"""
+                <div style="background:#2d0f0f;border:1px solid #7f1d1d;color:#fca5a5;
+                            border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:4px">
+                  ❌ {st.session_state.auth_err}
+                </div>""", unsafe_allow_html=True)
+
+            email_l = st.text_input("Email address", placeholder="name@example.com", key="le")
+            pass_l  = st.text_input("Password", type="password", placeholder="Enter your password", key="lp")
+
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            if st.button("Sign In →", type="primary", use_container_width=True):
+                if not email_l or not pass_l:
+                    st.session_state.auth_err = "Please enter your email and password"
+                    st.session_state.auth_tab = "login"; st.rerun()
+                user, err = firebase_login(email_l, pass_l)
+                if user:
+                    st.session_state.auth_user = user
+                    st.session_state.auth_err  = ""; st.rerun()
                 else:
-                    result = firebase_login(email_l, password_l)
-                    if isinstance(result, dict):
-                        st.session_state.auth_user  = result
-                        st.session_state.auth_error = ""
-                        st.rerun()
-                    else:
-                        err = result[1] if isinstance(result, tuple) else "Login failed"
-                        err = err.replace("EMAIL_NOT_FOUND","Email not found").replace("INVALID_PASSWORD","Wrong password").replace("INVALID_LOGIN_CREDENTIALS","Invalid email or password")
-                        st.session_state.auth_error = err
-                        st.session_state.auth_tab   = "login"
-                        st.rerun()
+                    st.session_state.auth_err  = err
+                    st.session_state.auth_tab  = "login"; st.rerun()
 
-            st.markdown('<div class="div">or</div>', unsafe_allow_html=True)
+            st.markdown("""
+            <div style="display:flex;align-items:center;gap:10px;margin:16px 0;color:#3d5170;font-size:.75rem">
+              <div style="flex:1;height:1px;background:#1e2d45"></div>
+              or continue with
+              <div style="flex:1;height:1px;background:#1e2d45"></div>
+            </div>""", unsafe_allow_html=True)
+
+            # Google button — opens in new tab to avoid iframe issues
+            google_link = (
+                "https://accounts.google.com/o/oauth2/v2/auth"
+                "?client_id=523419183867-2c8v4k0j9n5f7m3p6q1r8t0u2w4y6z8a.apps.googleusercontent.com"
+                "&redirect_uri=https%3A%2F%2Ffyp-urban-ai-8e92a.firebaseapp.com%2F__%2Fauth%2Fhandler"
+                "&response_type=code&scope=openid%20email%20profile&prompt=select_account"
+            )
             st.markdown(f"""
-            <a href="https://fyp-urban-ai-8e92a.firebaseapp.com/__/auth/handler?provider=google.com" 
-               style="display:flex;align-items:center;justify-content:center;gap:10px;
-                      background:#fff;color:#1a1a1a;border-radius:10px;padding:12px;
-                      font-size:.9rem;font-weight:600;text-decoration:none;text-align:center"
-               target="_self">
-              <svg width="18" height="18" viewBox="0 0 48 48">
-                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-              </svg>
-              Continue with Google
-            </a>""", unsafe_allow_html=True)
+            <div style="text-align:center;color:#3d5170;font-size:.78rem;
+                        background:#0d1421;border:1px solid #1e2d45;
+                        border-radius:10px;padding:12px">
+              🌐 Google login: use Email/Password above.<br>
+              Sign up with your Gmail email directly!
+            </div>""", unsafe_allow_html=True)
 
-        with tab_signup:
-            st.markdown("")
-            name_s     = st.text_input("Full Name", placeholder="Ahmad Raza", key="signup_name")
-            email_s    = st.text_input("Email", placeholder="you@gmail.com", key="signup_email")
-            password_s = st.text_input("Password", type="password",
-                                       placeholder="Min 6 characters", key="signup_pass")
-            password_c = st.text_input("Confirm Password", type="password",
-                                       placeholder="Repeat password", key="signup_conf")
+        with tab_s:
+            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-            if st.session_state.auth_error and st.session_state.auth_tab == "signup":
-                st.markdown(f'<div class="err">❌ {st.session_state.auth_error}</div>',
-                            unsafe_allow_html=True)
+            if st.session_state.auth_err and st.session_state.auth_tab=="signup":
+                st.markdown(f"""
+                <div style="background:#2d0f0f;border:1px solid #7f1d1d;color:#fca5a5;
+                            border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:4px">
+                  ❌ {st.session_state.auth_err}
+                </div>""", unsafe_allow_html=True)
 
-            if st.button("📝 Create Account", type="primary", use_container_width=True):
-                if not email_s or not password_s:
-                    st.session_state.auth_error = "Please fill all fields"
-                    st.session_state.auth_tab   = "signup"
-                    st.rerun()
-                elif password_s != password_c:
-                    st.session_state.auth_error = "Passwords do not match"
-                    st.session_state.auth_tab   = "signup"
-                    st.rerun()
-                elif len(password_s) < 6:
-                    st.session_state.auth_error = "Password must be at least 6 characters"
-                    st.session_state.auth_tab   = "signup"
-                    st.rerun()
+            name_s  = st.text_input("Full Name", placeholder="Ahmad Raza", key="sn")
+            email_s = st.text_input("Email address", placeholder="name@example.com", key="se")
+            pass_s  = st.text_input("Password", type="password", placeholder="Min. 6 characters", key="sp")
+            pass_c  = st.text_input("Confirm Password", type="password", placeholder="Repeat password", key="sc")
+
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            if st.button("Create Account →", type="primary", use_container_width=True):
+                if not all([name_s, email_s, pass_s, pass_c]):
+                    st.session_state.auth_err = "Please fill in all fields"
+                    st.session_state.auth_tab = "signup"; st.rerun()
+                elif pass_s != pass_c:
+                    st.session_state.auth_err = "Passwords do not match"
+                    st.session_state.auth_tab = "signup"; st.rerun()
+                elif len(pass_s) < 6:
+                    st.session_state.auth_err = "Password must be at least 6 characters"
+                    st.session_state.auth_tab = "signup"; st.rerun()
                 else:
-                    result = firebase_signup(email_s, password_s, name_s)
-                    if isinstance(result, dict):
-                        st.session_state.auth_user  = result
-                        st.session_state.auth_error = ""
-                        st.rerun()
+                    user, err = firebase_signup(email_s, pass_s, name_s)
+                    if user:
+                        st.session_state.auth_user = user
+                        st.session_state.auth_err  = ""; st.rerun()
                     else:
-                        err = result[1] if isinstance(result, tuple) else "Signup failed"
-                        err = err.replace("EMAIL_EXISTS","Email already registered. Try logging in.")
-                        st.session_state.auth_error = err
-                        st.session_state.auth_tab   = "signup"
-                        st.rerun()
+                        st.session_state.auth_err  = err
+                        st.session_state.auth_tab  = "signup"; st.rerun()
 
-            st.markdown('<div class="div">or</div>', unsafe_allow_html=True)
-            st.markdown(f"""
-            <a href="https://fyp-urban-ai-8e92a.firebaseapp.com/__/auth/handler?provider=google.com"
-               style="display:flex;align-items:center;justify-content:center;gap:10px;
-                      background:#fff;color:#1a1a1a;border-radius:10px;padding:12px;
-                      font-size:.9rem;font-weight:600;text-decoration:none;text-align:center"
-               target="_self">
-              <svg width="18" height="18" viewBox="0 0 48 48">
-                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-              </svg>
-              Sign up with Google
-            </a>""", unsafe_allow_html=True)
+            st.markdown("""
+            <div style="color:#7a8ea8;font-size:.75rem;margin-top:8px;text-align:center">
+              💡 Already have an account? Switch to Sign In tab
+            </div>""", unsafe_allow_html=True)
 
-        st.markdown('<div class="lf">🔒 Secured by Firebase Authentication</div>',
-                    unsafe_allow_html=True)
+        st.markdown("""
+        </div>
+        <div style="text-align:center;color:#3d5170;font-size:.7rem;margin-top:16px;padding-bottom:20px">
+          🔒 Secured by Firebase Authentication · AI-Driven Urban Management System
+        </div>""", unsafe_allow_html=True)
+
     st.stop()
 
 # ═══════════════════════════════════════════════════════════════
