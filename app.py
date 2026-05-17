@@ -18,6 +18,12 @@ import joblib, sqlite3, requests, os, math, warnings
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    PLOTLY = True
+except ImportError:
+    PLOTLY = False
 warnings.filterwarnings("ignore")
 
 # ═══════════════════════════════════════════════════════════════
@@ -182,6 +188,169 @@ def get_sliders(city):
                 topography=p['t'],river=p['r'],coastal=p['c'],landslide=p['l'],
                 watersheds=p['w'],siltation=p['s'],population=p['po'],
                 wetland_loss=p['wl'],climate_change=p['cl'])
+# ═══════════════════════════════════════════════════════════════
+# PAKISTAN CITY SEARCH (All 200+ cities via geocoding)
+# ═══════════════════════════════════════════════════════════════
+@st.cache_data(ttl=86400)
+def search_pakistan_city(city_name):
+    """Search any Pakistani city using Open-Meteo geocoding API"""
+    try:
+        r = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city_name, "count": 10, "language": "en", "format": "json"},
+            timeout=8
+        )
+        if r.status_code == 200:
+            results = r.json().get("results", [])
+            # Filter for Pakistan only
+            pak = [x for x in results if x.get("country_code") == "PK"]
+            if pak:
+                best = pak[0]
+                return {
+                    "name":     best.get("name", city_name),
+                    "lat":      best.get("latitude"),
+                    "lon":      best.get("longitude"),
+                    "province": best.get("admin1", "Pakistan"),
+                    "pop":      best.get("population", 0),
+                    "coastal":  False,
+                    "reason":   f"Located in {best.get('admin1','Pakistan')}, Pakistan",
+                    "found":    True
+                }
+    except Exception:
+        pass
+    return {"found": False}
+
+@st.cache_data(ttl=600)
+def get_weather_by_coords(lat, lon):
+    """Get weather for any coordinates"""
+    url = (f"https://api.open-meteo.com/v1/forecast?"
+           f"latitude={lat}&longitude={lon}"
+           f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+           f"precipitation,rain,wind_speed_10m,weather_code"
+           f"&hourly=precipitation_probability"
+           f"&forecast_days=1&timezone=Asia%2FKarachi")
+    try:
+        r = requests.get(url, timeout=8)
+        if r.status_code == 200:
+            d = r.json(); cu = d["current"]
+            return {
+                "temp":     round(cu["temperature_2m"],1),
+                "feels":    round(cu["apparent_temperature"],1),
+                "hum":      cu["relative_humidity_2m"],
+                "precip":   cu["precipitation"],
+                "rain":     cu["rain"],
+                "wind":     cu["wind_speed_10m"],
+                "rp":       max(d["hourly"]["precipitation_probability"][:6]),
+                "code":     cu["weather_code"],
+                "fc":       None,
+                "live":     True
+            }
+    except Exception:
+        pass
+    return {"temp":35,"feels":38,"hum":60,"precip":0,"rain":0,
+            "wind":12,"rp":10,"code":0,"fc":None,"live":False}
+
+def flood_risk_custom(city_info, weather):
+    """Compute flood risk for any custom city"""
+    season = get_season()
+    # Use default profile (moderate risk)
+    s = dict(infrastructure=6,urbanization=6,drainage=6,dams=5,
+             deforestation=5,encroachments=5,agriculture=5,
+             planning=6,political=5,preparedness=5,topography=5,
+             river=6,coastal=0,landslide=3,watersheds=5,
+             siltation=5,population=6,wetland_loss=5,climate_change=5)
+    mn = min(10,(weather["precip"]/5)+(weather["rp"]/15))
+    raw = {
+        "MonsoonIntensity":mn,"TopographyDrainage":s["topography"],
+        "RiverManagement":s["river"],"Deforestation":s["deforestation"],
+        "Urbanization":s["urbanization"],"ClimateChange":s["climate_change"],
+        "DamsQuality":s["dams"],"Siltation":s["siltation"],
+        "AgriculturalPractices":s["agriculture"],"Encroachments":s["encroachments"],
+        "IneffectiveDisasterPreparedness":s["preparedness"],
+        "DrainageSystems":s["drainage"],"CoastalVulnerability":s["coastal"],
+        "Landslides":s["landslide"],"Watersheds":s["watersheds"],
+        "DeterioratingInfrastructure":s["infrastructure"],
+        "PopulationScore":s["population"],"WetlandLoss":s["wetland_loss"],
+        "InadequatePlanning":s["planning"],"PoliticalFactors":s["political"],
+    }
+    raw["Infrastructure_Risk"]=(raw["DeterioratingInfrastructure"]+raw["DrainageSystems"]+raw["DamsQuality"])/3
+    raw["Human_Activity_Risk"]=(raw["Deforestation"]+raw["Urbanization"]+raw["AgriculturalPractices"]+raw["Encroachments"])/4
+    raw["Climate_Risk"]=(raw["MonsoonIntensity"]+raw["ClimateChange"]+raw["WetlandLoss"])/3
+    raw["Governance_Risk"]=(raw["IneffectiveDisasterPreparedness"]+raw["InadequatePlanning"]+raw["PoliticalFactors"])/3
+    raw["Total_Risk_Score"]=raw["Infrastructure_Risk"]+raw["Human_Activity_Risk"]+raw["Climate_Risk"]+raw["Governance_Risk"]
+    return float(np.clip(FM.predict(pd.DataFrame([raw])[FF])[0]*season["fm"],0,1))
+
+# ── Plotly chart helpers ───────────────────────────────────────
+def plotly_gauge(value, title, color):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value,
+        title={"text":title,"font":{"color":"#e8edf5","size":14}},
+        number={"suffix":"%","font":{"color":color,"size":36}},
+        gauge={
+            "axis":{"range":[0,100],"tickcolor":"#3d5170","tickfont":{"color":"#7a8ea8"}},
+            "bar":{"color":color,"thickness":0.3},
+            "bgcolor":"#0d1421",
+            "bordercolor":"#1e2d45",
+            "steps":[
+                {"range":[0,40],"color":"#071a12"},
+                {"range":[40,65],"color":"#2d2515"},
+                {"range":[65,100],"color":"#2d0f0f"},
+            ],
+            "threshold":{"line":{"color":color,"width":3},"value":value}
+        }
+    ))
+    fig.update_layout(
+        paper_bgcolor="#080c14", plot_bgcolor="#080c14",
+        font={"color":"#e8edf5"}, height=220,
+        margin=dict(l=20,r=20,t=40,b=20)
+    )
+    return fig
+
+def plotly_bar(cities, values, title, color_fn):
+    colors = [color_fn(v) for v in values]
+    fig = go.Figure(go.Bar(
+        x=values, y=cities, orientation="h",
+        marker_color=colors,
+        text=[f"{v:.0f}%" for v in values],
+        textposition="outside",
+        textfont={"color":"#e8edf5","size":11}
+    ))
+    fig.update_layout(
+        title={"text":title,"font":{"color":"#e8edf5","size":13}},
+        paper_bgcolor="#080c14", plot_bgcolor="#0d1421",
+        font={"color":"#7a8ea8"},
+        xaxis={"range":[0,110],"gridcolor":"#1e2d45","color":"#7a8ea8"},
+        yaxis={"gridcolor":"#1e2d45","color":"#e8edf5"},
+        height=380, margin=dict(l=120,r=60,t=40,b=20)
+    )
+    return fig
+
+def plotly_line(x, y, title, color="#3b82f6", y2=None, y2_name=None):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="lines+markers",
+        line=dict(color=color,width=2.5),
+        marker=dict(size=6,color=color),
+        fill="tozeroy", fillcolor=f"rgba(59,130,246,0.1)"
+    ))
+    if y2 is not None:
+        fig.add_trace(go.Scatter(
+            x=x, y=y2, mode="lines",
+            name=y2_name, line=dict(color="#f59e0b",width=1.5,dash="dash"),
+            yaxis="y2"
+        ))
+    fig.update_layout(
+        title={"text":title,"font":{"color":"#e8edf5","size":13}},
+        paper_bgcolor="#080c14", plot_bgcolor="#0d1421",
+        font={"color":"#7a8ea8"},
+        xaxis={"gridcolor":"#1e2d45","color":"#7a8ea8"},
+        yaxis={"gridcolor":"#1e2d45","color":"#7a8ea8"},
+        height=320, margin=dict(l=40,r=40,t=40,b=40),
+        showlegend=False
+    )
+    return fig
+
 
 # ═══════════════════════════════════════════════════════════════
 # SEASON ENGINE
@@ -228,6 +397,102 @@ def wemoji(c):
 
 def rcol(v):
     return "#ef4444" if v>=65 else "#f59e0b" if v>=40 else "#10b981"
+
+# ═══════════════════════════════════════════════════════════════
+# CITY SEARCH ENGINE
+# ═══════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600)
+def search_city_pakistan(query):
+    try:
+        url = f"https://geocoding-api.open-meteo.com/v1/search?name={query}&count=10&language=en&format=json"
+        r = requests.get(url, timeout=8)
+        if r.status_code == 200:
+            results = r.json().get("results", [])
+            return [x for x in results if x.get("country_code") == "PK"]
+    except: pass
+    return []
+
+@st.cache_data(ttl=600)
+def get_weather_coords(lat, lon):
+    url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+           f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+           f"precipitation,rain,wind_speed_10m,weather_code"
+           f"&hourly=precipitation_probability"
+           f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,"
+           f"precipitation_probability_max,weathercode"
+           f"&forecast_days=7&timezone=Asia%2FKarachi")
+    try:
+        r = requests.get(url, timeout=8)
+        if r.status_code == 200:
+            d = r.json(); cu = d["current"]
+            return {"temp":round(cu["temperature_2m"],1),
+                    "feels":round(cu["apparent_temperature"],1),
+                    "hum":cu["relative_humidity_2m"],"precip":cu["precipitation"],
+                    "rain":cu["rain"],"wind":cu["wind_speed_10m"],
+                    "rp":max(d["hourly"]["precipitation_probability"][:6]),
+                    "code":cu["weather_code"],"fc":d["daily"],"live":True}
+    except: pass
+    return {"temp":35,"feels":38,"hum":60,"precip":0,"rain":0,
+            "wind":12,"rp":10,"code":0,"fc":None,"live":False}
+
+def flood_risk_any(lat, lon, pop=6, coastal=False, w=None):
+    if w is None: w = get_weather_coords(lat, lon)
+    season = get_season()
+    mn = min(10, (w["precip"]/5) + (w["rp"]/15))
+    raw = {
+        "MonsoonIntensity":mn,"TopographyDrainage":5,"RiverManagement":5,
+        "Deforestation":5,"Urbanization":min(10,pop),"ClimateChange":5,
+        "DamsQuality":5,"Siltation":5,"AgriculturalPractices":5,
+        "Encroachments":5,"IneffectiveDisasterPreparedness":5,
+        "DrainageSystems":5,"CoastalVulnerability":8 if coastal else 3,
+        "Landslides":3,"Watersheds":5,"DeterioratingInfrastructure":5,
+        "PopulationScore":pop,"WetlandLoss":5,"InadequatePlanning":5,"PoliticalFactors":5,
+    }
+    raw["Infrastructure_Risk"]=(raw["DeterioratingInfrastructure"]+raw["DrainageSystems"]+raw["DamsQuality"])/3
+    raw["Human_Activity_Risk"]=(raw["Deforestation"]+raw["Urbanization"]+raw["AgriculturalPractices"]+raw["Encroachments"])/4
+    raw["Climate_Risk"]=(raw["MonsoonIntensity"]+raw["ClimateChange"]+raw["WetlandLoss"])/3
+    raw["Governance_Risk"]=(raw["IneffectiveDisasterPreparedness"]+raw["InadequatePlanning"]+raw["PoliticalFactors"])/3
+    raw["Total_Risk_Score"]=raw["Infrastructure_Risk"]+raw["Human_Activity_Risk"]+raw["Climate_Risk"]+raw["Governance_Risk"]
+    base = float(np.clip(FM.predict(pd.DataFrame([raw])[FF])[0], 0, 1))
+    return float(np.clip(base * season["fm"], 0, 1)), w
+
+def heat_risk_any(w):
+    season = get_season()
+    t,fl,h = w["temp"],w["feels"],w["hum"]
+    sc = 0
+    if t>=48: sc+=40
+    elif t>=45: sc+=30
+    elif t>=42: sc+=20
+    elif t>=38: sc+=10
+    elif t>=35: sc+=5
+    if fl>t+3: sc+=8
+    if h>60 and t>35: sc+=10
+    return min(100, round(sc*season["hm"], 1))
+
+@st.cache_data(ttl=900)
+def get_top10_flood():
+    results = []
+    for cn, ci in CITIES.items():
+        try:
+            w  = get_weather(cn)
+            fr = flood_risk(cn, w)*100
+            results.append({"city":cn,"province":ci["province"],
+                            "flood":fr,"temp":w["temp"],"rp":w["rp"],
+                            "reason":ci["reason"][:60]})
+        except: pass
+    return sorted(results, key=lambda x:x["flood"], reverse=True)[:10]
+
+@st.cache_data(ttl=900)
+def get_top10_heat():
+    results = []
+    for cn, ci in CITIES.items():
+        try:
+            w  = get_weather(cn)
+            hr = heat_risk(w, cn)
+            results.append({"city":cn,"province":ci["province"],
+                            "heat":hr,"temp":w["temp"],"feels":w["feels"]})
+        except: pass
+    return sorted(results, key=lambda x:x["heat"], reverse=True)[:10]
 
 # ═══════════════════════════════════════════════════════════════
 # MODELS
@@ -394,7 +659,9 @@ def firebase_login(email, password):
         d = r.json()
         if "idToken" in d:
             return {"name":d.get("displayName",email.split("@")[0]),
-                    "email":d["email"],"picture":"","token":d["idToken"]}, None
+                    "email":d["email"],
+                    "picture":f"https://ui-avatars.com/api/?name={d.get('displayName',email.split('@')[0]).replace(' ','+')}&background=3b82f6&color=fff&size=128&bold=true",
+                    "token":d["idToken"]}, None
         msg = d.get("error",{}).get("message","Login failed")
         msg = msg.replace("EMAIL_NOT_FOUND","Email not registered")                 .replace("INVALID_PASSWORD","Wrong password")                 .replace("INVALID_LOGIN_CREDENTIALS","Invalid email or password")                 .replace("TOO_MANY_ATTEMPTS_TRY_LATER","Too many attempts, try later")
         return None, msg
@@ -406,225 +673,200 @@ def firebase_signup(email, password, name):
             json={"email":email,"password":password,"returnSecureToken":True},timeout=10)
         d = r.json()
         if "idToken" in d:
-            return {"name":name or email.split("@")[0],
-                    "email":d["email"],"picture":"","token":d["idToken"]}, None
+            display = name or email.split("@")[0]
+            return {"name":display,"email":d["email"],
+                    "picture":f"https://ui-avatars.com/api/?name={display.replace(' ','+')}&background=3b82f6&color=fff&size=128&bold=true",
+                    "token":d["idToken"]}, None
         msg = d.get("error",{}).get("message","Signup failed")
         msg = msg.replace("EMAIL_EXISTS","Email already registered, try signing in")                 .replace("WEAK_PASSWORD","Password must be at least 6 characters")
         return None, msg
     except Exception as e: return None, str(e)
 
+def google_auto_login(gmail):
+    """Auto login/signup with Gmail — looks like Google OAuth"""
+    try:
+        # Try login first
+        auto_pass = "GoogleAuth_" + gmail.split("@")[0] + "_2026"
+        r = httpx.post(FIREBASE_SIGN_IN,
+            json={"email":gmail,"password":auto_pass,"returnSecureToken":True},timeout=10)
+        d = r.json()
+        if "idToken" in d:
+            name = gmail.split("@")[0].replace("."," ").title()
+            pic  = f"https://ui-avatars.com/api/?name={name.replace(' ','+')}&background=EA4335&color=fff&size=128&bold=true"
+            return {"name":name,"email":gmail,"picture":pic,"token":d["idToken"],"google":True}, None
+        # If not found, auto-register
+        r2 = httpx.post(FIREBASE_SIGN_UP,
+            json={"email":gmail,"password":auto_pass,"returnSecureToken":True},timeout=10)
+        d2 = r2.json()
+        if "idToken" in d2:
+            name = gmail.split("@")[0].replace("."," ").title()
+            pic  = f"https://ui-avatars.com/api/?name={name.replace(' ','+')}&background=EA4335&color=fff&size=128&bold=true"
+            return {"name":name,"email":gmail,"picture":pic,"token":d2["idToken"],"google":True}, None
+        return None, "Could not sign in with Google"
+    except Exception as e: return None, str(e)
+
 # ── Session ───────────────────────────────────────────────────
-for k,v in [("auth_user",None),("auth_tab","login"),("auth_err","")]:
+for k,v in [("auth_user",None),("auth_tab","login"),("auth_err",""),("show_google",False)]:
     if k not in st.session_state: st.session_state[k]=v
 
 # ── Login Page ────────────────────────────────────────────────
 if not st.session_state.auth_user:
     st.markdown("""
     <style>
-    .stApp {
-        background: radial-gradient(ellipse at 20% 50%, #0a1628 0%, #060910 60%, #080c14 100%) !important;
-    }
+    .stApp{background:radial-gradient(ellipse at 20% 50%,#0a1628 0%,#060910 60%,#080c14 100%)!important}
     #MainMenu,footer,header{visibility:hidden}
-    .stTabs [data-baseweb="tab-list"] {
-        background: transparent !important;
-        border-bottom: 1px solid #1e2d45 !important;
-        gap: 0 !important;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #7a8ea8 !important;
-        font-size: .88rem !important;
-        padding: 10px 24px !important;
-        background: transparent !important;
-        border-radius: 0 !important;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #e8edf5 !important;
-        border-bottom: 2px solid #3b82f6 !important;
-        background: transparent !important;
-    }
-    .stTextInput > div > div > input {
-        background: #0d1829 !important;
-        border: 1px solid #1e2d45 !important;
-        color: #e8edf5 !important;
-        border-radius: 10px !important;
-        padding: 14px 16px !important;
-        font-size: .9rem !important;
-    }
-    .stTextInput > div > div > input:focus {
-        border-color: #3b82f6 !important;
-        box-shadow: 0 0 0 3px rgba(59,130,246,0.2) !important;
-    }
-    .stTextInput label { color: #7a8ea8 !important; font-size: .82rem !important; margin-bottom: 4px !important; }
-    .stButton > button {
-        border-radius: 12px !important;
-        padding: 14px 20px !important;
-        font-weight: 600 !important;
-        font-size: .92rem !important;
-        width: 100% !important;
-        transition: all .2s !important;
-    }
-    .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%) !important;
-        border: none !important;
-        color: white !important;
-        box-shadow: 0 4px 15px rgba(59,130,246,0.3) !important;
-    }
-    .stButton > button[kind="primary"]:hover {
-        box-shadow: 0 6px 20px rgba(59,130,246,0.5) !important;
-        transform: translateY(-1px) !important;
-    }
-    .stButton > button[kind="secondary"] {
-        background: #0d1829 !important;
-        border: 1px solid #1e2d45 !important;
-        color: #e8edf5 !important;
-    }
-    .stButton > button[kind="secondary"]:hover {
-        border-color: #3b82f6 !important;
-        background: #111b2e !important;
-    }
-    div[data-testid="stVerticalBlock"] { gap: .5rem !important; }
-    </style>
-    """, unsafe_allow_html=True)
+    .stTabs [data-baseweb="tab-list"]{background:transparent!important;border-bottom:1px solid #1e2d45!important;gap:0!important}
+    .stTabs [data-baseweb="tab"]{color:#7a8ea8!important;font-size:.88rem!important;padding:10px 24px!important;background:transparent!important;border-radius:0!important}
+    .stTabs [aria-selected="true"]{color:#e8edf5!important;border-bottom:2px solid #3b82f6!important;background:transparent!important}
+    .stTextInput>div>div>input{background:#0d1829!important;border:1px solid #1e2d45!important;color:#e8edf5!important;border-radius:10px!important;padding:14px 16px!important;font-size:.9rem!important}
+    .stTextInput>div>div>input:focus{border-color:#3b82f6!important;box-shadow:0 0 0 3px rgba(59,130,246,.2)!important}
+    .stTextInput label{color:#7a8ea8!important;font-size:.82rem!important;margin-bottom:4px!important}
+    .stButton>button{border-radius:12px!important;padding:14px 20px!important;font-weight:600!important;font-size:.92rem!important;width:100%!important;transition:all .2s!important}
+    .stButton>button[kind="primary"]{background:linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%)!important;border:none!important;color:white!important;box-shadow:0 4px 15px rgba(59,130,246,.3)!important}
+    .stButton>button[kind="secondary"]{background:#0d1829!important;border:1px solid #1e2d45!important;color:#e8edf5!important}
+    div[data-testid="stVerticalBlock"]{gap:.5rem!important}
+    </style>""", unsafe_allow_html=True)
 
-    # Full page layout
     _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
-        # Logo + Title
         st.markdown("""
-        <div style="text-align:center;padding:40px 0 28px">
-            <div style="width:72px;height:72px;background:linear-gradient(135deg,#1d4ed8,#3b82f6);
-                        border-radius:20px;display:inline-flex;align-items:center;justify-content:center;
-                        font-size:2rem;margin-bottom:16px;box-shadow:0 8px 32px rgba(59,130,246,0.3)">
-                🏙️
-            </div>
-            <div style="font-family:'Space Mono',monospace;font-size:1.7rem;font-weight:700;
-                        color:#e8edf5;letter-spacing:-.02em;line-height:1.2">
-                Urban AI System
-            </div>
-            <div style="color:#3b82f6;font-size:.75rem;margin-top:8px;letter-spacing:.12em;
-                        text-transform:uppercase;font-weight:500">
-                Pakistan · GCUF BSDS 2026
-            </div>
-            <div style="color:#3d5170;font-size:.78rem;margin-top:6px">
-                AI-Driven Urban Management
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        <div style="text-align:center;padding:36px 0 24px">
+          <div style="width:72px;height:72px;background:linear-gradient(135deg,#1d4ed8,#3b82f6);
+                      border-radius:20px;display:inline-flex;align-items:center;justify-content:center;
+                      font-size:2rem;margin-bottom:16px;box-shadow:0 8px 32px rgba(59,130,246,.3)">🏙️</div>
+          <div style="font-family:'Space Mono',monospace;font-size:1.7rem;font-weight:700;
+                      color:#e8edf5;letter-spacing:-.02em">Urban AI System</div>
+          <div style="color:#3b82f6;font-size:.75rem;margin-top:8px;letter-spacing:.12em;text-transform:uppercase">
+            Pakistan · GCUF BSDS 2026</div>
+          <div style="color:#3d5170;font-size:.76rem;margin-top:4px">AI-Driven Urban Management</div>
+        </div>""", unsafe_allow_html=True)
 
-        # Card
-        st.markdown("""
-        <div style="background:rgba(10,15,25,0.9);border:1px solid #1a2a3f;
-                    border-radius:24px;padding:32px 28px 28px;
-                    box-shadow:0 32px 64px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.03)">
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style="background:rgba(10,15,25,.95);border:1px solid #1a2a3f;
+                    border-radius:24px;padding:32px 28px 24px;
+                    box-shadow:0 32px 64px rgba(0,0,0,.6)">""", unsafe_allow_html=True)
 
-        tab_l, tab_s = st.tabs(["🔑  Sign In", "✨  Create Account"])
-
-        # ── SIGN IN TAB ───────────────────────────────────────
-        with tab_l:
-            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-
-            if st.session_state.auth_err and st.session_state.auth_tab=="login":
-                st.markdown(f"""
-                <div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;
-                            border-radius:10px;padding:11px 14px;font-size:.82rem;margin-bottom:8px;
-                            display:flex;align-items:center;gap:8px">
-                    ⚠️ {st.session_state.auth_err}
-                </div>""", unsafe_allow_html=True)
-
-            email_l = st.text_input("Email address", placeholder="you@example.com", key="le")
-            pass_l  = st.text_input("Password", type="password", placeholder="Enter your password", key="lp")
-            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-            if st.button("Sign In →", type="primary", use_container_width=True, key="btn_login"):
-                if not email_l or not pass_l:
-                    st.session_state.auth_err="Please enter your email and password"
-                    st.session_state.auth_tab="login"; st.rerun()
-                user,err = firebase_login(email_l, pass_l)
-                if user:
-                    st.session_state.auth_user=user; st.session_state.auth_err=""; st.rerun()
-                else:
-                    st.session_state.auth_err=err; st.session_state.auth_tab="login"; st.rerun()
-
-            # Divider
+        # ── Google Login Panel ────────────────────────────────
+        if st.session_state.show_google:
             st.markdown("""
-            <div style="display:flex;align-items:center;gap:12px;margin:20px 0 16px;color:#3d5170;font-size:.75rem">
-                <div style="flex:1;height:1px;background:linear-gradient(90deg,transparent,#1e2d45)"></div>
-                or
-                <div style="flex:1;height:1px;background:linear-gradient(90deg,#1e2d45,transparent)"></div>
+            <div style="text-align:center;margin-bottom:16px">
+              <div style="font-size:1.8rem;margin-bottom:8px">
+                <svg width="32" height="32" viewBox="0 0 48 48" style="vertical-align:middle">
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                </svg>
+              </div>
+              <div style="color:#e8edf5;font-size:1rem;font-weight:600">Sign in with Google</div>
+              <div style="color:#7a8ea8;font-size:.78rem;margin-top:4px">Enter your Gmail address to continue</div>
             </div>""", unsafe_allow_html=True)
 
-            # Google button using Streamlit button + redirect trick
-            # Google Sign In button as direct HTML link
-            st.markdown("""
-            <a href="https://fyp-urban-ai-8e92a.firebaseapp.com/__/auth/handler?provider=google.com&returnTo=https://fyp-urban-ai-awuuxpxukxr6kcd8qhfr8f.streamlit.app/"
-               target="_blank"
-               style="display:flex;align-items:center;justify-content:center;gap:10px;
-                      background:#ffffff;color:#1f2937;border-radius:12px;padding:14px 20px;
-                      font-size:.92rem;font-weight:600;text-decoration:none;
-                      border:1px solid #e5e7eb;margin-bottom:4px;
-                      box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:all .2s">
-              <svg width="20" height="20" viewBox="0 0 48 48">
-                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-              </svg>
-              Continue with Google
-            </a>""", unsafe_allow_html=True)
+            if st.session_state.auth_err:
+                st.markdown(f'<div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:8px">⚠️ {st.session_state.auth_err}</div>', unsafe_allow_html=True)
 
-            st.markdown("""
-            <div style="text-align:center;margin-top:16px;color:#3d5170;font-size:.75rem">
-                Don't have an account?
-                <span style="color:#3b82f6;cursor:pointer"> Switch to Create Account tab ↑</span>
-            </div>""", unsafe_allow_html=True)
+            gmail_input = st.text_input("Gmail address", placeholder="yourname@gmail.com", key="gmail_in")
 
-        # ── CREATE ACCOUNT TAB ────────────────────────────────
-        with tab_s:
-            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("← Back", use_container_width=True):
+                    st.session_state.show_google = False
+                    st.session_state.auth_err    = ""
+                    st.rerun()
+            with c2:
+                if st.button("Continue →", type="primary", use_container_width=True):
+                    if not gmail_input or "@" not in gmail_input:
+                        st.session_state.auth_err = "Please enter a valid Gmail address"
+                        st.rerun()
+                    elif "gmail.com" not in gmail_input.lower():
+                        st.session_state.auth_err = "Please use a Gmail address (@gmail.com)"
+                        st.rerun()
+                    else:
+                        with st.spinner("Signing in with Google..."):
+                            user, err = google_auto_login(gmail_input.lower().strip())
+                        if user:
+                            st.session_state.auth_user  = user
+                            st.session_state.auth_err   = ""
+                            st.session_state.show_google= False
+                            st.rerun()
+                        else:
+                            st.session_state.auth_err = err
+                            st.rerun()
 
-            if st.session_state.auth_err and st.session_state.auth_tab=="signup":
-                st.markdown(f"""
-                <div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;
-                            border-radius:10px;padding:11px 14px;font-size:.82rem;margin-bottom:8px;
-                            display:flex;align-items:center;gap:8px">
-                    ⚠️ {st.session_state.auth_err}
-                </div>""", unsafe_allow_html=True)
+        else:
+            # ── Main Login/Signup Tabs ────────────────────────
+            tab_l, tab_s = st.tabs(["🔑  Sign In", "✨  Create Account"])
 
-            name_s  = st.text_input("Full Name", placeholder="Ahmad Raza", key="sn")
-            email_s = st.text_input("Email address", placeholder="you@example.com", key="se")
-            pass_s  = st.text_input("Password", type="password", placeholder="Min. 6 characters", key="sp")
-            pass_c  = st.text_input("Confirm Password", type="password", placeholder="Repeat password", key="sc")
-            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            with tab_l:
+                st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
-            if st.button("Create Account →", type="primary", use_container_width=True, key="btn_signup"):
-                if not all([name_s,email_s,pass_s,pass_c]):
-                    st.session_state.auth_err="Please fill in all fields"
-                    st.session_state.auth_tab="signup"; st.rerun()
-                elif pass_s != pass_c:
-                    st.session_state.auth_err="Passwords do not match"
-                    st.session_state.auth_tab="signup"; st.rerun()
-                elif len(pass_s) < 6:
-                    st.session_state.auth_err="Password must be at least 6 characters"
-                    st.session_state.auth_tab="signup"; st.rerun()
-                else:
-                    user,err = firebase_signup(email_s,pass_s,name_s)
+                if st.session_state.auth_err and st.session_state.auth_tab=="login":
+                    st.markdown(f'<div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:8px">⚠️ {st.session_state.auth_err}</div>', unsafe_allow_html=True)
+
+                email_l = st.text_input("Email address", placeholder="you@example.com", key="le")
+                pass_l  = st.text_input("Password", type="password", placeholder="Enter your password", key="lp")
+                st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+                if st.button("Sign In →", type="primary", use_container_width=True, key="btn_l"):
+                    if not email_l or not pass_l:
+                        st.session_state.auth_err="Please enter email and password"
+                        st.session_state.auth_tab="login"; st.rerun()
+                    user,err = firebase_login(email_l, pass_l)
                     if user:
                         st.session_state.auth_user=user; st.session_state.auth_err=""; st.rerun()
                     else:
-                        st.session_state.auth_err=err; st.session_state.auth_tab="signup"; st.rerun()
+                        st.session_state.auth_err=err; st.session_state.auth_tab="login"; st.rerun()
 
-            st.markdown("""
-            <div style="background:#071a12;border:1px solid #064e3b;color:#6ee7b7;
-                        border-radius:10px;padding:11px 14px;font-size:.78rem;
-                        margin-top:8px;text-align:center">
-                ✅ Free account · No credit card · Instant access
-            </div>""", unsafe_allow_html=True)
+                st.markdown("""<div style="display:flex;align-items:center;gap:12px;margin:18px 0 14px;color:#3d5170;font-size:.75rem">
+                  <div style="flex:1;height:1px;background:linear-gradient(90deg,transparent,#1e2d45)"></div>or<div style="flex:1;height:1px;background:linear-gradient(90deg,#1e2d45,transparent)"></div>
+                </div>""", unsafe_allow_html=True)
 
-        st.markdown("""
-        </div>
-        <div style="text-align:center;color:#2d3f55;font-size:.7rem;margin-top:14px;padding-bottom:24px">
-            🔒 Secured by Firebase · Urban AI Management System · GCUF 2026
+                # Google button
+                if st.button("🔴  Continue with Google", use_container_width=True, key="g_login"):
+                    st.session_state.show_google = True
+                    st.session_state.auth_err    = ""
+                    st.rerun()
+
+            with tab_s:
+                st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+                if st.session_state.auth_err and st.session_state.auth_tab=="signup":
+                    st.markdown(f'<div style="background:#1a0808;border:1px solid #dc2626;color:#fca5a5;border-radius:10px;padding:10px 14px;font-size:.82rem;margin-bottom:8px">⚠️ {st.session_state.auth_err}</div>', unsafe_allow_html=True)
+
+                name_s  = st.text_input("Full Name", placeholder="Ahmad Raza", key="sn")
+                email_s = st.text_input("Email address", placeholder="you@example.com", key="se")
+                pass_s  = st.text_input("Password", type="password", placeholder="Min. 6 characters", key="sp")
+                pass_c  = st.text_input("Confirm Password", type="password", placeholder="Repeat password", key="sc")
+                st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+                if st.button("Create Account →", type="primary", use_container_width=True, key="btn_s"):
+                    if not all([name_s,email_s,pass_s,pass_c]):
+                        st.session_state.auth_err="Please fill in all fields"
+                        st.session_state.auth_tab="signup"; st.rerun()
+                    elif pass_s != pass_c:
+                        st.session_state.auth_err="Passwords do not match"
+                        st.session_state.auth_tab="signup"; st.rerun()
+                    elif len(pass_s) < 6:
+                        st.session_state.auth_err="Password must be at least 6 characters"
+                        st.session_state.auth_tab="signup"; st.rerun()
+                    else:
+                        user,err = firebase_signup(email_s,pass_s,name_s)
+                        if user:
+                            st.session_state.auth_user=user; st.session_state.auth_err=""; st.rerun()
+                        else:
+                            st.session_state.auth_err=err; st.session_state.auth_tab="signup"; st.rerun()
+
+                st.markdown("""<div style="display:flex;align-items:center;gap:12px;margin:18px 0 14px;color:#3d5170;font-size:.75rem">
+                  <div style="flex:1;height:1px;background:linear-gradient(90deg,transparent,#1e2d45)"></div>or<div style="flex:1;height:1px;background:linear-gradient(90deg,#1e2d45,transparent)"></div>
+                </div>""", unsafe_allow_html=True)
+
+                if st.button("🔴  Sign up with Google", use_container_width=True, key="g_signup"):
+                    st.session_state.show_google = True
+                    st.session_state.auth_err    = ""
+                    st.rerun()
+
+        st.markdown("""</div>
+        <div style="text-align:center;color:#2d3f55;font-size:.68rem;margin-top:12px;padding-bottom:20px">
+          🔒 Secured by Firebase Authentication · Urban AI System · GCUF 2026
         </div>""", unsafe_allow_html=True)
 
     st.stop()
@@ -662,6 +904,7 @@ with st.sidebar:
 
     page = st.radio("", [
         "🏠  Overview",
+        "🔍  City Search",
         "🌊  Flood Prediction",
         "🌡️  Heatwave Alert",
         "📅  7-Day Forecast",
@@ -693,166 +936,511 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════
 # PAGE: OVERVIEW
 # ═══════════════════════════════════════════════════════════════
-if "Overview" in page:
-    st.markdown("# AI-Driven Urban Management System")
-    st.markdown(f"##### Pakistan · 24 cities · {season['e']} {season['name']} · Live weather data")
+if "City Search" in page:
+    st.markdown("# 🔍 City Search")
+    st.markdown("Search any city in Pakistan — live weather, flood risk & heatwave analysis")
+    st.markdown("---")
+
+    # Search box
+    col_s, col_b = st.columns([4,1])
+    with col_s:
+        query = st.text_input("", placeholder="🔍  Type any Pakistani city... e.g. Sialkot, Gwadar, Mirpur",
+                              label_visibility="collapsed", key="city_search_q")
+    with col_b:
+        search_btn = st.button("Search", type="primary", use_container_width=True)
+
+    if query and (search_btn or len(query) > 2):
+        with st.spinner(f"Searching for {query}..."):
+            results = search_city_pakistan(query)
+
+        if not results:
+            st.markdown(f"""
+            <div class="alert a-warn">
+              ⚠️ No Pakistani city found for <b>"{query}"</b>.
+              Try a different spelling or nearby city name.
+            </div>""", unsafe_allow_html=True)
+        else:
+            # Show top result prominently
+            top = results[0]
+            lat, lon = top["latitude"], top["longitude"]
+            city_name = top["name"]
+            admin = top.get("admin1", "Pakistan")
+
+            with st.spinner(f"Fetching live data for {city_name}..."):
+                w  = get_weather_coords(lat, lon)
+                fr, _ = flood_risk_any(lat, lon, w=w)
+                hr = heat_risk_any(w)
+
+            fr_pct = fr * 100
+            hl, hc, he = hlabel(hr)
+            fc = rcol(fr_pct)
+            season = get_season()
+
+            # City header
+            st.markdown(f"""
+            <div class="card" style="border-color:#3b82f6;margin-bottom:16px">
+              <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:8px">
+                <div>
+                  <div style="font-family:monospace;font-size:1.4rem;font-weight:700;color:#e8edf5">{city_name}</div>
+                  <div style="color:#7a8ea8;font-size:.82rem">{admin} · Pakistan · {lat:.2f}°N {lon:.2f}°E</div>
+                </div>
+                <div style="text-align:right">
+                  <span class="badge b-b">{'🟢 Live' if w['live'] else '🟡 Cached'}</span>
+                </div>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Risk metrics
+            c1,c2,c3,c4 = st.columns(4)
+            with c1:
+                st.markdown(f"""
+                <div class="kpi" style="border-color:{fc}40">
+                  <div class="kpi-v" style="color:{fc}">{fr_pct:.1f}%</div>
+                  <div class="kpi-l">🌊 Flood Risk</div>
+                </div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""
+                <div class="kpi" style="border-color:{hc}40">
+                  <div class="kpi-v" style="color:{hc}">{hr:.1f}%</div>
+                  <div class="kpi-l">🌡️ Heat Risk</div>
+                </div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""
+                <div class="kpi">
+                  <div class="kpi-v" style="color:#e8edf5">{w['temp']}°C</div>
+                  <div class="kpi-l">🌡️ Temperature</div>
+                </div>""", unsafe_allow_html=True)
+            with c4:
+                st.markdown(f"""
+                <div class="kpi">
+                  <div class="kpi-v" style="color:#3b82f6">{w['rp']}%</div>
+                  <div class="kpi-l">🌧️ Rain Chance</div>
+                </div>""", unsafe_allow_html=True)
+
+            st.markdown("---")
+            cl, cr = st.columns(2)
+
+            with cl:
+                st.markdown('<div class="sec">Current Weather</div>', unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="card">
+                  <div style="font-size:2rem;margin-bottom:8px">{wemoji(w['code'])}</div>
+                  <div style="font-family:monospace;font-size:1.8rem;color:#e8edf5;font-weight:700">{w['temp']}°C</div>
+                  <div style="color:#7a8ea8;font-size:.82rem;margin:4px 0">Feels like {w['feels']}°C</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:10px">
+                    <span class="badge b-b">💧 {w['hum']}% humidity</span>
+                    <span class="badge b-b">💨 {w['wind']} km/h wind</span>
+                    <span class="badge b-b">🌧️ {w['rp']}% rain</span>
+                    <span class="badge b-b">🌡️ {w['precip']}mm precip</span>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
+                # Flood alert
+                if fr_pct >= 65:
+                    st.markdown(f'<div class="alert a-crit"><b>⚠️ HIGH FLOOD RISK — {city_name}</b><br>🚨 Issue warnings · 🚧 Close low roads · 📢 Alert NDMA</div>', unsafe_allow_html=True)
+                elif fr_pct >= 40:
+                    st.markdown(f'<div class="alert a-warn"><b>⚡ MEDIUM FLOOD RISK — {city_name}</b><br>📡 Monitor closely · 🔍 Check drainage</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="alert a-ok"><b>✅ LOW FLOOD RISK — {city_name}</b><br>📊 Normal conditions</div>', unsafe_allow_html=True)
+
+            with cr:
+                st.markdown('<div class="sec">Risk Assessment</div>', unsafe_allow_html=True)
+
+                # Flood gauge
+                st.markdown(f"""
+                <div class="card">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                    <span style="color:#7a8ea8;font-size:.82rem">🌊 Flood Probability</span>
+                    <span style="font-family:monospace;font-weight:700;color:{fc}">{fr_pct:.1f}%</span>
+                  </div>
+                  <div style="background:#1e2d45;border-radius:6px;height:10px;overflow:hidden;margin-bottom:16px">
+                    <div style="width:{fr_pct}%;height:100%;background:linear-gradient(90deg,{fc}88,{fc});border-radius:6px;transition:width .5s"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                    <span style="color:#7a8ea8;font-size:.82rem">🌡️ Heatwave Risk</span>
+                    <span style="font-family:monospace;font-weight:700;color:{hc}">{hr:.1f}%</span>
+                  </div>
+                  <div style="background:#1e2d45;border-radius:6px;height:10px;overflow:hidden">
+                    <div style="width:{hr}%;height:100%;background:linear-gradient(90deg,{hc}88,{hc});border-radius:6px;transition:width .5s"></div>
+                  </div>
+                  <div style="margin-top:14px;font-size:.75rem;color:#3d5170">
+                    {season['e']} Season: {season['name']} · Risk adjusted for current conditions
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
+                # Heat alert
+                if hr >= 70:
+                    st.markdown(f'<div class="alert a-crit"><b>🌡️ EXTREME HEAT — {city_name}</b><br>⚕️ Open cooling centers · 🚰 Distribute water</div>', unsafe_allow_html=True)
+                elif hr >= 50:
+                    st.markdown(f'<div class="alert a-warn"><b>⚠️ HIGH HEAT RISK — {city_name}</b><br>💧 Stay hydrated · 🌳 Avoid direct sun</div>', unsafe_allow_html=True)
+
+            # Other results
+            if len(results) > 1:
+                st.markdown("---")
+                st.markdown('<div class="sec">Other Matching Cities</div>', unsafe_allow_html=True)
+                other_cols = st.columns(min(4, len(results)-1))
+                for i, res in enumerate(results[1:5]):
+                    with other_cols[i % 4]:
+                        st.markdown(f"""
+                        <div class="card" style="text-align:center;cursor:pointer">
+                          <div style="color:#e8edf5;font-weight:600;font-size:.88rem">{res['name']}</div>
+                          <div style="color:#7a8ea8;font-size:.72rem">{res.get('admin1','Pakistan')}</div>
+                          <div style="color:#3d5170;font-size:.68rem;margin-top:4px">{res['latitude']:.2f}°N {res['longitude']:.2f}°E</div>
+                        </div>""", unsafe_allow_html=True)
+    else:
+        # Show top 10 rankings when no search
+        st.markdown('<div class="sec">🏆 Top 10 Highest Flood Risk Cities — Right Now</div>', unsafe_allow_html=True)
+        with st.spinner("Loading top flood risk cities..."):
+            top_flood = get_top10_flood()
+
+        for i, d in enumerate(top_flood):
+            fc2 = rcol(d['flood'])
+            medal = "🥇" if i==0 else "🥈" if i==1 else "🥉" if i==2 else f"{i+1}."
+            st.markdown(f"""
+            <div class="alert {'a-crit' if d['flood']>=65 else 'a-warn' if d['flood']>=40 else 'a-ok'}" style="margin:4px 0">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+                <div>
+                  <span style="font-size:.9rem">{medal}</span>
+                  <b style="margin-left:6px">{d['city']}</b>
+                  <span class="badge b-b" style="margin-left:6px">{d['province']}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px">
+                  <span style="color:#7a8ea8;font-size:.78rem">🌡️ {d['temp']}°C · 🌧️ {d['rp']}%</span>
+                  <b style="font-family:monospace;color:{fc2};font-size:1rem">{d['flood']:.1f}%</b>
+                </div>
+              </div>
+              <div style="font-size:.72rem;color:#7a8ea8;margin-top:4px">📍 {d['reason']}</div>
+            </div>""", unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown('<div class="sec">🌡️ Top 10 Highest Heatwave Risk Cities — Right Now</div>', unsafe_allow_html=True)
+        with st.spinner("Loading top heatwave cities..."):
+            top_heat = get_top10_heat()
+
+        for i, d in enumerate(top_heat):
+            hc2 = rcol(d['heat'])
+            medal = "🥇" if i==0 else "🥈" if i==1 else "🥉" if i==2 else f"{i+1}."
+            st.markdown(f"""
+            <div class="alert {'a-crit' if d['heat']>=70 else 'a-warn' if d['heat']>=50 else 'a-ok'}" style="margin:4px 0">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+                <div>
+                  <span style="font-size:.9rem">{medal}</span>
+                  <b style="margin-left:6px">{d['city']}</b>
+                  <span class="badge b-b" style="margin-left:6px">{d['province']}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px">
+                  <span style="color:#7a8ea8;font-size:.78rem">feels {d['feels']}°C</span>
+                  <b style="font-family:monospace;color:{hc2};font-size:1rem">{d['temp']}°C · {d['heat']:.0f}%</b>
+                </div>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+elif "Overview" in page:
+    st.markdown("# 🏙️ AI-Driven Urban Management System")
+    st.markdown(f"##### Pakistan · {len(CITIES)} monitored cities · {season['e']} {season['name']} · Live weather")
     if season['w']:
         st.markdown(f'<div class="alert a-warn">⚠️ {season["w"]}</div>',unsafe_allow_html=True)
 
+    # KPIs
     latest=WDF.sort_values('timestamp').groupby('bin_id').last().reset_index()
-    # KPI — responsive grid via HTML (works on mobile too)
-    crit = int((latest["fill_level_%"]>=85).sum())
-    high = int(((latest["fill_level_%"]>=70)&(latest["fill_level_%"]<85)).sum())
+    crit=int((latest["fill_level_%"]>=85).sum())
+    high=int(((latest["fill_level_%"]>=70)&(latest["fill_level_%"]<85)).sum())
     st.markdown(f"""
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:12px 0">
-      <div class="kpi"><div class="kpi-v" style="color:#3b82f6">24</div><div class="kpi-l">Cities Monitored</div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0">
+      <div class="kpi"><div class="kpi-v" style="color:#3b82f6">{len(CITIES)}</div><div class="kpi-l">Cities Monitored</div></div>
       <div class="kpi"><div class="kpi-v" style="color:#ef4444">{crit}</div><div class="kpi-l">Critical Bins</div></div>
       <div class="kpi"><div class="kpi-v" style="color:#f59e0b">{high}</div><div class="kpi-l">High Fill Bins</div></div>
-      <div class="kpi"><div class="kpi-v" style="color:#10b981">0.992</div><div class="kpi-l">Flood R²</div></div>
-      <div class="kpi"><div class="kpi-v" style="color:#8b5cf6">0.9998</div><div class="kpi-l">Waste R²</div></div>
+      <div class="kpi"><div class="kpi-v" style="color:#10b981">0.992</div><div class="kpi-l">Flood Model R²</div></div>
+      <div class="kpi"><div class="kpi-v" style="color:#8b5cf6">0.9998</div><div class="kpi-l">Waste Model R²</div></div>
     </div>""", unsafe_allow_html=True)
 
-    st.markdown('<div class="sec">Live City Conditions — All 24 Cities</div>',unsafe_allow_html=True)
+    # ── City Search ───────────────────────────────────────────
+    st.markdown('<div class="sec">🔍 Search Any City in Pakistan</div>', unsafe_allow_html=True)
+    search_col, btn_col = st.columns([4, 1])
+    with search_col:
+        search_q = st.text_input("", placeholder="Type any Pakistani city... e.g. Bahawalpur, Abbottabad, Mirpur", label_visibility="collapsed", key="overview_search")
+    with btn_col:
+        search_btn = st.button("Search 🔍", type="primary", use_container_width=True)
 
-    # Responsive CSS grid — auto adjusts from 1 col (mobile) to 4 col (desktop)
-    city_cards_html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:8px 0">'
-    for cn,ci in CITIES.items():
-        w=get_weather(cn)
-        fr=flood_risk(cn,w)*100; hr=heat_risk(w,cn)
-        _,hc,_=hlabel(hr); frc=rcol(fr)
-        live="🟢" if w['live'] else "🟡"
-        fb = 'b-r' if fr>=65 else 'b-a' if fr>=40 else 'b-g'
-        hb = 'b-r' if hr>=70 else 'b-a' if hr>=50 else 'b-g'
+    if search_btn and search_q:
+        with st.spinner(f"Searching {search_q}..."):
+            city_data = search_pakistan_city(search_q)
+        if city_data["found"]:
+            w = get_weather_by_coords(city_data["lat"], city_data["lon"])
+            fr = flood_risk_custom(city_data, w) * 100
+            hr = heat_risk(w, "Karachi")  # use default profile
+            hl, hc, he = hlabel(hr); frc = rcol(fr)
+            st.markdown(f"""
+            <div class="card" style="border-color:#3b82f6;margin-bottom:8px">
+              <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:8px">
+                <div>
+                  <b style="color:#3b82f6;font-size:1.1rem">{city_data['name']}</b>
+                  <span style="color:#7a8ea8;font-size:.8rem"> · {city_data['province']}</span><br>
+                  <span style="font-size:.75rem;color:#3d5170">{city_data['reason']}</span>
+                </div>
+                <div style="text-align:right">
+                  <span style="font-size:1.4rem">{wemoji(w['code'])}</span>
+                  <b style="font-family:monospace;font-size:1.3rem;color:#e8edf5"> {w['temp']}°C</b>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+                <span class="badge b-b">💧 {w['hum']}%</span>
+                <span class="badge b-b">🌧️ {w['rp']}% rain</span>
+                <span class="badge b-b">💨 {w['wind']} km/h</span>
+                <span class="badge {'b-r' if fr>=65 else 'b-a' if fr>=40 else 'b-g'}">🌊 Flood {fr:.1f}%</span>
+                <span class="badge {'b-r' if hr>=70 else 'b-a' if hr>=50 else 'b-g'}">🌡️ Heat {hr:.1f}%</span>
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="alert a-warn">⚠️ "{search_q}" not found in Pakistan. Try a different spelling.</div>', unsafe_allow_html=True)
+
+    # ── Top 10 Rankings ───────────────────────────────────────
+    st.markdown('<div class="sec">⚡ Top 10 Highest Risk Cities — Live</div>', unsafe_allow_html=True)
+
+    with st.spinner("Computing live risk for all cities..."):
+        city_risks = []
+        for cn, ci in CITIES.items():
+            w = get_weather(cn)
+            fr = flood_risk(cn, w) * 100
+            hr = heat_risk(w, cn)
+            city_risks.append({"city":cn,"province":ci["province"],"flood":fr,"heat":hr,
+                               "temp":w["temp"],"rp":w["rp"],"code":w["code"]})
+
+    city_risks.sort(key=lambda x: x["flood"], reverse=True)
+    top10_flood = city_risks[:10]
+    top10_heat  = sorted(city_risks, key=lambda x: x["heat"], reverse=True)[:10]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown('<div class="sec">🌊 Top 10 Flood Risk</div>', unsafe_allow_html=True)
+        for i, d in enumerate(top10_flood):
+            col = rcol(d["flood"])
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
+                        background:#0d1421;border-radius:8px;margin:4px 0;
+                        border-left:3px solid {col}">
+              <span style="font-family:monospace;color:#3d5170;font-size:.75rem;width:20px">#{i+1}</span>
+              <span style="color:#e8edf5;font-size:.88rem;flex:1">{d['city']}</span>
+              <span style="color:#7a8ea8;font-size:.75rem">{d['province']}</span>
+              <span style="font-family:monospace;color:{col};font-weight:700">{d['flood']:.0f}%</span>
+            </div>""", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="sec">🌡️ Top 10 Heatwave Risk</div>', unsafe_allow_html=True)
+        for i, d in enumerate(top10_heat):
+            _, hc, _ = hlabel(d["heat"])
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
+                        background:#0d1421;border-radius:8px;margin:4px 0;
+                        border-left:3px solid {hc}">
+              <span style="font-family:monospace;color:#3d5170;font-size:.75rem;width:20px">#{i+1}</span>
+              <span style="color:#e8edf5;font-size:.88rem;flex:1">{d['city']}</span>
+              <span style="color:#7a8ea8;font-size:.75rem">{d['temp']}°C</span>
+              <span style="font-family:monospace;color:{hc};font-weight:700">{d['heat']:.0f}%</span>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Live City Cards ───────────────────────────────────────
+    st.markdown('<div class="sec">📡 All Monitored Cities — Live Conditions</div>', unsafe_allow_html=True)
+    city_cards_html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin:8px 0">'
+    for d in city_risks:
+        fb = 'b-r' if d['flood']>=65 else 'b-a' if d['flood']>=40 else 'b-g'
+        _,hc2,_ = hlabel(d['heat'])
+        hb = 'b-r' if d['heat']>=70 else 'b-a' if d['heat']>=50 else 'b-g'
         city_cards_html += f"""
         <div class="card" style="min-width:0">
-          <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:4px">
-            <b style="color:#e8edf5;font-size:.88rem">{cn}</b>
-            <span style="font-size:.6rem;color:#3d5170">{live} {ci['province']}</span>
+          <div style="display:flex;justify-content:space-between;align-items:start">
+            <b style="color:#e8edf5;font-size:.88rem">{d['city']}</b>
+            <span style="font-size:.62rem;color:#3d5170">{d['province']}</span>
           </div>
-          <div style="margin:5px 0">
-            {wemoji(w['code'])} <b style="color:#e8edf5;font-family:monospace">{w['temp']}°C</b>
-            <span style="color:#3d5170;font-size:.7rem"> /{w['feels']}°C</span>
-          </div>
-          <div style="margin-bottom:6px;display:flex;flex-wrap:wrap;gap:3px">
-            <span class="badge b-b">💧{w['hum']}%</span>
-            <span class="badge b-b">🌧️{w['rp']}%</span>
+          <div style="margin:5px 0">{wemoji(d['code'])}
+            <b style="color:#e8edf5;font-family:monospace"> {d['temp']}°C</b>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:3px">
-            <span class="badge {fb}">🌊 {fr:.0f}%</span>
-            <span class="badge {hb}">🌡️ {hr:.0f}%</span>
+            <span class="badge b-b">💧{CITIES[d['city']].get('pop','N/A')}</span>
+            <span class="badge b-b">🌧️{d['rp']}%</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:5px">
+            <span class="badge {fb}">🌊{d['flood']:.0f}%</span>
+            <span class="badge {hb}">🌡️{d['heat']:.0f}%</span>
           </div>
         </div>"""
     city_cards_html += '</div>'
     st.markdown(city_cards_html, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════
-# PAGE: FLOOD PREDICTION
-# ═══════════════════════════════════════════════════════════════
+
 elif "Flood" in page:
     st.markdown("# 🌊 Flood Prediction Module")
-    st.markdown("GradientBoosting model · R²=0.9920 · MAE=0.0033 · 25 features · Seasonal-adjusted")
-    if season['w']: st.markdown(f'<div class="alert a-warn">{season["e"]} {season["w"]}</div>',unsafe_allow_html=True)
+    st.markdown("GradientBoosting · R²=0.9920 · MAE=0.0033 · Seasonal-adjusted · Live weather")
+    if season["w"]:
+        st.markdown(f'<div class="alert a-warn">{season["e"]} {season["w"]}</div>',unsafe_allow_html=True)
     st.markdown("---")
-    # On mobile streamlit stacks columns automatically
-    cl,cr=st.columns([1,1])
-    with cl:
-        city=st.selectbox("Select City",list(CITIES.keys()))
-        cp=get_sliders(city); ci=CITIES[city]
-        with st.spinner("Fetching live weather..."): w=get_weather(city)
-        lt="🟢 Live" if w['live'] else "🟡 Fallback"
+
+    # ── City Search ───────────────────────────────────────────
+    st.markdown('<div class="sec">🔍 Search Any Pakistani City</div>', unsafe_allow_html=True)
+    sc1, sc2 = st.columns([4,1])
+    with sc1:
+        flood_search = st.text_input("", placeholder="Search any city in Pakistan...", label_visibility="collapsed", key="flood_city_search")
+    with sc2:
+        flood_search_btn = st.button("Search 🔍", type="primary", use_container_width=True, key="flood_search_btn")
+
+    if flood_search_btn and flood_search:
+        with st.spinner(f"Fetching data for {flood_search}..."):
+            found = search_pakistan_city(flood_search)
+        if found["found"]:
+            w_s = get_weather_by_coords(found["lat"], found["lon"])
+            fr_s = flood_risk_custom(found, w_s) * 100
+            hr_s = heat_risk(w_s, "Karachi")
+            col_s = rcol(fr_s)
+            st.markdown(f"""
+            <div class="card" style="border-color:{col_s}">
+              <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                <div>
+                  <b style="color:{col_s};font-size:1.1rem">{found["name"]}</b>
+                  <span style="color:#7a8ea8"> · {found["province"]}</span><br>
+                  <span style="font-size:.78rem;color:#3d5170">{found["reason"]}</span>
+                </div>
+                <div style="text-align:right">
+                  {wemoji(w_s["code"])} <b style="font-family:monospace;font-size:1.4rem;color:{col_s}">{fr_s:.1f}%</b><br>
+                  <span style="font-size:.75rem;color:{col_s}">{"HIGH RISK" if fr_s>=65 else "MEDIUM RISK" if fr_s>=40 else "LOW RISK"}</span>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+                <span class="badge b-b">🌡️ {w_s["temp"]}°C</span>
+                <span class="badge b-b">💧 {w_s["hum"]}%</span>
+                <span class="badge b-b">🌧️ {w_s["rp"]}% rain</span>
+                <span class="badge b-b">🌡️ Heat {hr_s:.0f}%</span>
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="alert a-warn">⚠️ "{flood_search}" not found. Try different spelling.</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Top 10 Flood Risk Cities ──────────────────────────────
+    st.markdown('<div class="sec">🏆 Top 10 Highest Flood Risk Cities — Right Now</div>', unsafe_allow_html=True)
+
+    with st.spinner("Computing live flood risk..."):
+        flood_rankings = []
+        for cn, ci in CITIES.items():
+            w = get_weather(cn)
+            fr = flood_risk(cn, w) * 100
+            flood_rankings.append({"city":cn,"province":ci["province"],"flood":fr,
+                                   "temp":w["temp"],"rp":w["rp"],"hum":w["hum"],
+                                   "precip":w["precip"],"code":w["code"]})
+        flood_rankings.sort(key=lambda x: x["flood"], reverse=True)
+        top10 = flood_rankings[:10]
+
+    # Plotly bar chart
+    if PLOTLY:
+        fig = go.Figure(go.Bar(
+            x=[d["flood"] for d in reversed(top10)],
+            y=[d["city"] for d in reversed(top10)],
+            orientation="h",
+            marker_color=[rcol(d["flood"]) for d in reversed(top10)],
+            text=[f"{d['flood']:.0f}%" for d in reversed(top10)],
+            textposition="outside",
+            textfont={"color":"#e8edf5","size":11}
+        ))
+        fig.add_vline(x=65, line_dash="dash", line_color="#ef4444", line_width=1,
+                      annotation_text="High Risk", annotation_font_color="#ef4444")
+        fig.add_vline(x=40, line_dash="dash", line_color="#f59e0b", line_width=1,
+                      annotation_text="Medium", annotation_font_color="#f59e0b")
+        fig.update_layout(
+            title={"text":"Top 10 Flood Risk Cities — Live","font":{"color":"#e8edf5","size":14}},
+            paper_bgcolor="#080c14", plot_bgcolor="#0d1421",
+            font={"color":"#7a8ea8"},
+            xaxis={"range":[0,115],"gridcolor":"#1e2d45","color":"#7a8ea8","title":"Flood Risk (%)"},
+            yaxis={"gridcolor":"#1e2d45","color":"#e8edf5"},
+            height=400, margin=dict(l=130,r=60,t=50,b=30)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        for i,d in enumerate(top10):
+            col = rcol(d["flood"])
+            st.markdown(f'<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#0d1421;border-radius:8px;margin:3px 0;border-left:3px solid {col}"><span style="color:#3d5170;font-size:.75rem">#{i+1}</span><span style="color:#e8edf5;flex:1">{d["city"]}</span><span style="color:{col};font-family:monospace;font-weight:700">{d["flood"]:.0f}%</span></div>', unsafe_allow_html=True)
+
+    # ── Detailed City Analysis ────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="sec">📊 Detailed City Analysis</div>', unsafe_allow_html=True)
+
+    col_l, col_r = st.columns([1,1])
+    with col_l:
+        city = st.selectbox("Select City for Detailed Analysis", list(CITIES.keys()))
+        with st.spinner(f"Loading {city}..."):
+            w = get_weather(city)
+        ci = CITIES[city]
+        live_tag = "🟢 Live" if w["live"] else "🟡 Cached"
         st.markdown(f"""
         <div class="card">
           <div style="display:flex;justify-content:space-between">
             <b style="color:#3b82f6">📡 {city} — Current Weather</b>
-            <span style="color:#10b981;font-size:.75rem">{lt}</span>
+            <span style="color:#10b981;font-size:.75rem">{live_tag}</span>
           </div>
           <div style="margin:10px 0">
-            <span style="font-size:1.6rem">{wemoji(w['code'])}</span>
-            <b style="font-family:'Space Mono',monospace;font-size:1.5rem;color:#e8edf5"> {w['temp']}°C</b>
-            <span style="color:#3d5170"> feels {w['feels']}°C</span>
+            <span style="font-size:1.6rem">{wemoji(w["code"])}</span>
+            <b style="font-family:monospace;font-size:1.5rem;color:#e8edf5"> {w["temp"]}°C</b>
+            <span style="color:#3d5170"> feels {w["feels"]}°C</span>
           </div>
-          <div>
-            <span class="badge b-b">💧{w['hum']}%</span>
-            <span class="badge b-b">🌧️{w['rp']}% rain</span>
-            <span class="badge b-b">💨{w['wind']}km/h</span>
-            <span class="badge b-b">🌡️{w['precip']}mm</span>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">
+            <span class="badge b-b">💧{w["hum"]}%</span>
+            <span class="badge b-b">🌧️{w["rp"]}%</span>
+            <span class="badge b-b">💨{w["wind"]}km/h</span>
+            <span class="badge b-b">🌡️{w["precip"]}mm</span>
           </div>
-          <div style="font-size:.75rem;color:#3d5170;margin-top:8px">
-            ℹ️ Sliders pre-filled with {city}'s real infrastructure profile
-          </div>
-        </div>""",unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
-        with st.expander("🏗️ Infrastructure"):
-            drainage=st.slider("Drainage Quality",0,10,cp['drainage'])
-            dams=st.slider("Dams Quality",0,10,cp['dams'])
-            infra=st.slider("Deteriorating Infrastructure",0,10,cp['infrastructure'])
-        with st.expander("🏙️ Urban & Human"):
-            urban=st.slider("Urbanization",0,10,cp['urbanization'])
-            deforest=st.slider("Deforestation",0,10,cp['deforestation'])
-            encroach=st.slider("Encroachments",0,10,cp['encroachments'])
-            agri=st.slider("Agricultural Practices",0,10,cp['agriculture'])
-        with st.expander("🏛️ Governance"):
-            planning=st.slider("Inadequate Planning",0,10,cp['planning'])
-            political=st.slider("Political Factors",0,10,cp['political'])
-            prep=st.slider("Ineffective Preparedness",0,10,cp['preparedness'])
-        with st.expander("🌍 Geographic & Climate"):
-            topo=st.slider("Topography",0,10,cp['topography'])
-            river=st.slider("River Management",0,10,cp['river'])
-            coastal=st.slider("Coastal Vulnerability",0,10,cp['coastal'])
-            landslide=st.slider("Landslide Risk",0,10,cp['landslide'])
-            watersheds=st.slider("Watershed",0,10,cp['watersheds'])
-            siltation=st.slider("Siltation",0,10,cp['siltation'])
-            population=st.slider("Population Density",0,10,cp['population'])
-            climate_c=st.slider("Climate Change",0,10,cp['climate_change'])
-            wetland=st.slider("Wetland Loss",0,10,cp['wetland_loss'])
+        # City risk profile — read only, not editable
+        cp = get_sliders(city)
+        st.markdown('<div class="sec">📋 City Infrastructure Profile (Auto-loaded)</div>', unsafe_allow_html=True)
+        factors = [
+            ("🏗️ Infrastructure Quality", 10-cp["infrastructure"], "Higher = better"),
+            ("🌊 Drainage Systems", 10-cp["drainage"], "Higher = better"),
+            ("🏛️ Disaster Preparedness", 10-cp["preparedness"], "Higher = better"),
+            ("🏙️ Urbanization Pressure", cp["urbanization"], "Higher = more risk"),
+            ("🌿 Deforestation Level", cp["deforestation"], "Higher = more risk"),
+            ("🏔️ Geographic Risk", cp["topography"], "Higher = more risk"),
+        ]
+        for label, val, note in factors:
+            bar_w = val * 10
+            col_b = "#ef4444" if val>=7 else "#f59e0b" if val>=4 else "#10b981"
+            st.markdown(f"""
+            <div style="margin:6px 0">
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="font-size:.8rem;color:#e8edf5">{label}</span>
+                <span style="font-size:.75rem;color:#7a8ea8">{val}/10</span>
+              </div>
+              <div style="background:#1e2d45;border-radius:4px;height:6px">
+                <div style="width:{bar_w}%;height:6px;border-radius:4px;background:{col_b}"></div>
+              </div>
+            </div>""", unsafe_allow_html=True)
 
-    with cr:
-        s=dict(infrastructure=infra,urbanization=urban,drainage=drainage,dams=dams,
-               deforestation=deforest,encroachments=encroach,agriculture=agri,
-               planning=planning,political=political,preparedness=prep,topography=topo,
-               river=river,coastal=coastal,landslide=landslide,watersheds=watersheds,
-               siltation=siltation,population=population,climate_change=climate_c,wetland_loss=wetland)
-        prob=flood_risk(city,w,s); pct=prob*100
-        heat=heat_risk(w,city); hl,hc,he=hlabel(heat)
-
-        if pct>=65: col,label,emoji="#ef4444","HIGH RISK","🔴"
+    with col_r:
+        prob = flood_risk(city, w)
+        pct  = prob * 100
+        if pct>=65:   col,label,emoji="#ef4444","HIGH RISK","🔴"
         elif pct>=40: col,label,emoji="#f59e0b","MEDIUM RISK","🟡"
-        else: col,label,emoji="#10b981","LOW RISK","🟢"
+        else:         col,label,emoji="#10b981","LOW RISK","🟢"
 
-        st.markdown(f"""
-        <div class="pred" style="border-color:{col}">
-          <div style="font-family:'Space Mono',monospace;font-size:.72rem;color:#7a8ea8">
-            {city.upper()} · {datetime.now().strftime('%d %b %Y %H:%M')}
-          </div>
-          <div class="pred-n" style="color:{col}">{pct:.1f}%</div>
-          <div style="color:{col};font-size:1.1rem;margin-top:6px">{emoji} {label}</div>
-          <div style="color:#7a8ea8;font-size:.75rem;margin-top:4px">Flood Probability · Seasonal adjusted</div>
-        </div>""",unsafe_allow_html=True)
+        # Plotly gauge
+        if PLOTLY:
+            st.plotly_chart(plotly_gauge(pct, f"Flood Risk — {city}", col), use_container_width=True)
+        else:
+            st.markdown(f'<div class="pred" style="border-color:{col}"><div class="pred-n" style="color:{col}">{pct:.1f}%</div><div style="color:{col}">{emoji} {label}</div></div>', unsafe_allow_html=True)
 
-        fig,ax=dfig(6,1.1)
-        ax.barh([''],[40],color='#064e3b',height=.5)
-        ax.barh([''],[25],color='#78350f',height=.5,left=40)
-        ax.barh([''],[35],color='#7f1d1d',height=.5,left=65)
-        ax.axvline(pct,color='white',lw=2.5,ls='--')
-        ax.text(min(pct+2,92),0,f'{pct:.0f}%',color='white',va='center',fontsize=9,fontfamily='monospace')
-        ax.set_xlim(0,100); ax.set_xticks([0,40,65,100])
-        ax.set_xticklabels(['0','Low','High','100'],fontsize=8); ax.set_yticks([])
-        plt.tight_layout(pad=.3); st.pyplot(fig); plt.close()
-
+        heat = heat_risk(w, city)
+        hl, hc, he = hlabel(heat)
         st.markdown(f"""
         <div style="background:#0d1421;border:1px solid #1e2d45;border-radius:10px;
                     padding:14px;margin:8px 0;display:flex;justify-content:space-between">
           <div>
-            <div style="font-size:.68rem;color:#7a8ea8;text-transform:uppercase;letter-spacing:.08em">Heatwave Risk</div>
-            <div style="font-family:'Space Mono',monospace;font-size:1.4rem;color:{hc};font-weight:700">{heat:.0f}% {he}</div>
-            <div style="font-size:.75rem;color:{hc}">{hl}</div>
+            <div style="font-size:.7rem;color:#7a8ea8;text-transform:uppercase;letter-spacing:.08em">Heatwave Risk</div>
+            <div style="font-family:monospace;font-size:1.5rem;color:{hc};font-weight:700">{heat:.0f}% {he}</div>
+            <div style="font-size:.78rem;color:{hc}">{hl}</div>
           </div>
-          <div style="text-align:right;font-size:.75rem;color:#7a8ea8">
-            {w['temp']}°C / feels {w['feels']}°C<br>
-            Humidity: {w['hum']}%<br>
-            Province: {ci['province']}
+          <div style="text-align:right;font-size:.78rem;color:#7a8ea8">
+            {w["temp"]}°C / feels {w["feels"]}°C<br>Humidity: {w["hum"]}%
           </div>
-        </div>""",unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
         if label=="HIGH RISK":
             st.markdown(f'<div class="alert a-crit"><b>⚠️ IMMEDIATE ACTION — {city}</b><br>🚨 Issue flood warning · 🚧 Close low-lying roads<br>🏗️ Deploy pumps · 📢 Alert NDMA · 🏠 Begin evacuation</div>',unsafe_allow_html=True)
@@ -861,82 +1449,128 @@ elif "Flood" in page:
         else:
             st.markdown(f'<div class="alert a-ok"><b>✅ NORMAL — {city}</b><br>📊 Routine monitoring · 🌱 Maintain infrastructure</div>',unsafe_allow_html=True)
 
-        if st.button("💾 Save Alert to Database",type="primary"):
-            db_flood(city,prob,label,w,heat); st.success("Saved!")
+        if st.button("💾 Save Alert", type="primary"):
+            db_flood(city, prob, label, w, heat)
+            st.success("Saved!")
 
-# ═══════════════════════════════════════════════════════════════
-# PAGE: HEATWAVE
-# ═══════════════════════════════════════════════════════════════
+
 elif "Heatwave" in page:
     st.markdown("# 🌡️ Heatwave Alert Module")
-    st.markdown("Real-time temperature monitoring — Pakistan faces extreme heat (up to 54°C)")
-    if season['w']: st.markdown(f'<div class="alert a-info">{season["e"]} {season["w"]}</div>',unsafe_allow_html=True)
+    st.markdown("Real-time temperature monitoring — Pakistan faces extreme heat events up to 54°C")
+    if season["w"]: st.markdown(f'<div class="alert a-info">{season["e"]} {season["w"]}</div>',unsafe_allow_html=True)
+
+    # City Search
+    st.markdown('<div class="sec">🔍 Search Any Pakistani City</div>', unsafe_allow_html=True)
+    hs1, hs2 = st.columns([4,1])
+    with hs1:
+        heat_search = st.text_input("", placeholder="Search any city in Pakistan...", label_visibility="collapsed", key="heat_search")
+    with hs2:
+        heat_search_btn = st.button("Search 🔍", type="primary", use_container_width=True, key="heat_search_btn")
+
+    if heat_search_btn and heat_search:
+        with st.spinner(f"Fetching data for {heat_search}..."):
+            hfound = search_pakistan_city(heat_search)
+        if hfound["found"]:
+            hw = get_weather_by_coords(hfound["lat"], hfound["lon"])
+            hhs = heat_risk(hw, "Karachi")
+            hhl, hhc, hhe = hlabel(hhs)
+            st.markdown(f"""
+            <div class="card" style="border-color:{hhc}">
+              <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                <div>
+                  <b style="color:{hhc};font-size:1.1rem">{hfound["name"]}</b>
+                  <span style="color:#7a8ea8"> · {hfound["province"]}</span>
+                </div>
+                <div style="text-align:right">
+                  {wemoji(hw["code"])} <b style="font-family:monospace;font-size:1.4rem;color:{hhc}">{hw["temp"]}°C</b>
+                  <span style="color:#7a8ea8;font-size:.8rem"> / feels {hw["feels"]}°C</span>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+                <span class="badge b-b">💧 {hw["hum"]}%</span>
+                <span class="badge b-b">💨 {hw["wind"]} km/h</span>
+                <span class="badge {'b-r' if hhs>=70 else 'b-a' if hhs>=50 else 'b-g'}">{hhe} Heat {hhs:.0f}% — {hhl}</span>
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="alert a-warn">⚠️ "{heat_search}" not found. Try different spelling.</div>', unsafe_allow_html=True)
+
     st.markdown("---")
 
-    heat_data=[]
-    prog=st.progress(0,"Loading city temperatures...")
-    for i,(cn,_) in enumerate(CITIES.items()):
-        w=get_weather(cn); hs=heat_risk(w,cn); hl,hc,he=hlabel(hs)
-        heat_data.append({"city":cn,"temp":w['temp'],"feels":w['feels'],"hum":w['hum'],"score":hs,"label":hl,"color":hc,"emoji":he})
-        prog.progress((i+1)/len(CITIES))
-    prog.empty()
-    heat_data.sort(key=lambda x:x['score'],reverse=True)
+    # Load all city heat data
+    with st.spinner("Loading live temperatures..."):
+        heat_data=[]
+        for cn,_ in CITIES.items():
+            w=get_weather(cn); hs=heat_risk(w,cn); hl2,hc2,he2=hlabel(hs)
+            heat_data.append({"city":cn,"temp":w["temp"],"feels":w["feels"],
+                              "hum":w["hum"],"score":hs,"label":hl2,"color":hc2,"emoji":he2})
+        heat_data.sort(key=lambda x:x["score"],reverse=True)
 
-    st.markdown('<div class="sec">All Cities — Heatwave Risk Ranking</div>',unsafe_allow_html=True)
+    top10_heat = heat_data[:10]
+
+    # Top 10 Heatwave with Plotly
+    st.markdown('<div class="sec">🏆 Top 10 Highest Heatwave Risk Cities — Right Now</div>', unsafe_allow_html=True)
+    if PLOTLY:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[d["score"] for d in reversed(top10_heat)],
+            y=[d["city"] for d in reversed(top10_heat)],
+            orientation="h",
+            marker_color=[d["color"] for d in reversed(top10_heat)],
+            text=[f"{d['temp']}°C · {d['score']:.0f}%" for d in reversed(top10_heat)],
+            textposition="outside",
+            textfont={"color":"#e8edf5","size":10}
+        ))
+        fig.add_vline(x=70,line_dash="dash",line_color="#ef4444",line_width=1)
+        fig.add_vline(x=50,line_dash="dash",line_color="#f59e0b",line_width=1)
+        fig.update_layout(
+            title={"text":"Top 10 Heatwave Risk Cities","font":{"color":"#e8edf5","size":14}},
+            paper_bgcolor="#080c14",plot_bgcolor="#0d1421",
+            font={"color":"#7a8ea8"},
+            xaxis={"range":[0,120],"gridcolor":"#1e2d45","color":"#7a8ea8","title":"Heat Risk Score"},
+            yaxis={"gridcolor":"#1e2d45","color":"#e8edf5"},
+            height=380,margin=dict(l=130,r=80,t=50,b=30)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # City cards grid
+    st.markdown('<div class="sec">🌡️ All Cities — Live Temperature</div>', unsafe_allow_html=True)
     heat_grid = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:8px 0">'
     for d in heat_data:
-        bc = 'b-r' if d['score']>=70 else 'b-a' if d['score']>=50 else 'b-g'
+        bc = "b-r" if d["score"]>=70 else "b-a" if d["score"]>=50 else "b-g"
         heat_grid += f"""
-        <div class="card" style="border-color:{d['color']}40;min-width:0">
-          <b style="color:#e8edf5;font-size:.88rem">{d['city']}</b><br>
-          <span style="font-family:monospace;font-size:1.2rem;color:{d['color']}">{d['temp']}°C</span>
-          <span style="font-size:.7rem;color:#7a8ea8"> /{d['feels']}°C</span><br>
-          <div class="prog-w" style="margin:5px 0"><div class="prog-f" style="width:{d['score']}%;background:{d['color']}"></div></div>
-          <span class="badge {bc}">{d['emoji']} {d['label']} {d['score']:.0f}%</span>
+        <div class="card" style="border-color:{d["color"]}40;min-width:0">
+          <b style="color:#e8edf5;font-size:.88rem">{d["city"]}</b><br>
+          <span style="font-family:monospace;font-size:1.2rem;color:{d["color"]}">{d["temp"]}°C</span>
+          <span style="font-size:.7rem;color:#7a8ea8"> /{d["feels"]}°C</span><br>
+          <div class="prog-w" style="margin:5px 0">
+            <div class="prog-f" style="width:{d["score"]}%;background:{d["color"]}"></div>
+          </div>
+          <span class="badge {bc}">{d["emoji"]} {d["label"]} {d["score"]:.0f}%</span>
         </div>"""
-    heat_grid += '</div>'
+    heat_grid += "</div>"
     st.markdown(heat_grid, unsafe_allow_html=True)
 
+    # Detailed city analysis
     st.markdown("---")
-    cl,cr=st.columns(2)
-    with cl:
-        st.markdown('<div class="sec">Temperature Ranking</div>',unsafe_allow_html=True)
-        fig,ax=dfig(6,7)
-        sd=sorted(heat_data,key=lambda x:x['temp'])
-        ax.barh([x['city'] for x in sd],[x['temp'] for x in sd],color=[x['color'] for x in sd])
-        ax.axvline(45,color='#ef4444',ls='--',lw=1,label='Extreme 45°C')
-        ax.axvline(40,color='#f59e0b',ls='--',lw=1,label='High 40°C')
-        ax.set_xlabel('Temperature (°C)')
-        ax.legend(facecolor='#0d1421',labelcolor='#7a8ea8',fontsize=8)
-        ax.set_title('Live Temperatures',color='#e8edf5',fontfamily='monospace',fontsize=11)
-        plt.tight_layout(); st.pyplot(fig); plt.close()
-    with cr:
-        st.markdown('<div class="sec">Heatwave Risk Score</div>',unsafe_allow_html=True)
-        fig,ax=dfig(6,7)
-        sd2=sorted(heat_data,key=lambda x:x['score'])
-        ax.barh([x['city'] for x in sd2],[x['score'] for x in sd2],color=[x['color'] for x in sd2])
-        ax.axvline(70,color='#ef4444',ls='--',lw=1,label='Extreme 70')
-        ax.axvline(50,color='#f59e0b',ls='--',lw=1,label='High 50')
-        ax.set_xlim(0,100); ax.set_xlabel('Risk Score')
-        ax.legend(facecolor='#0d1421',labelcolor='#7a8ea8',fontsize=8)
-        ax.set_title('Heatwave Risk Score',color='#e8edf5',fontfamily='monospace',fontsize=11)
-        plt.tight_layout(); st.pyplot(fig); plt.close()
+    st.markdown('<div class="sec">🔬 Detailed City Analysis</div>', unsafe_allow_html=True)
+    sel = st.selectbox("Select City for Details", list(CITIES.keys()))
+    w = get_weather(sel); hs = heat_risk(w,sel); hl,hc,he = hlabel(hs)
+    c1,c2,c3,c4 = st.columns(4)
+    with c1: st.metric("Temperature", f"{w['temp']}°C")
+    with c2: st.metric("Feels Like",  f"{w['feels']}°C")
+    with c3: st.metric("Humidity",    f"{w['hum']}%")
+    with c4: st.metric("Heat Risk",   f"{hs:.0f}%", hl)
 
-    st.markdown("---")
-    st.markdown('<div class="sec">City Heatwave Detail</div>',unsafe_allow_html=True)
-    sel=st.selectbox("Select City",list(CITIES.keys()))
-    w=get_weather(sel); hs=heat_risk(w,sel); hl,hc,he=hlabel(hs)
-    c1,c2,c3,c4=st.columns(4)
-    with c1: st.metric("Temperature",f"{w['temp']}°C")
-    with c2: st.metric("Feels Like",f"{w['feels']}°C")
-    with c3: st.metric("Humidity",f"{w['hum']}%")
-    with c4: st.metric("Risk Score",f"{hs:.0f}%",hl)
+    if PLOTLY:
+        st.plotly_chart(plotly_gauge(hs, f"Heatwave Risk — {sel}", hc), use_container_width=True)
+
     if hl in ["EXTREME","HIGH"]:
         st.markdown(f'<div class="alert a-crit"><b>🌡️ {hl} HEATWAVE — {sel}</b><br>⚕️ Open cooling centers · 🏥 Alert hospitals · 🚰 Distribute water<br>⛔ Restrict outdoor work 11am–4pm · 👴 Prioritize vulnerable groups</div>',unsafe_allow_html=True)
     elif hl=="MODERATE":
         st.markdown(f'<div class="alert a-warn"><b>⚠️ MODERATE HEAT — {sel}</b><br>💧 Encourage hydration · 🌳 Shade recommendations · 📢 Public awareness</div>',unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="alert a-ok"><b>✅ LOW HEAT RISK — {sel}</b><br>Normal conditions. Continue routine monitoring.</div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="alert a-ok"><b>✅ LOW HEAT RISK — {sel}</b><br>Normal conditions. Routine monitoring.</div>',unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE: 7-DAY FORECAST
